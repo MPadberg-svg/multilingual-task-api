@@ -1,0 +1,67 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment files
+.env
+.env.local
+.env.production
+!.env.example
+!.env.codespaces
+
+# SQLite
+*.sqlite3
+*.sqlite3-journal
+
+# Testing
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.tox/
+.hypothesis/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
+
+# Docker overrides
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Temp
+tmp/
+temp/
+
+# Django static/media
+staticfiles/
+media/
+
+# Type checking
+.mypy_cache/
+
+# Celery
+
+celerybeat-schedule
+celerybeat.pid
+
+# Secrets
+*.pem
+*.key
+secrets.json
+credentials.json
