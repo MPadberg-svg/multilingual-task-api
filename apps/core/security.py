@@ -44,8 +44,7 @@ class InputValidator:
     ]
 
     SCRIPT_PATTERNS = [
-        r'<script[^>]*>.*?</script>',
-        r'<iframe[^>]*>.*?</iframe>',
+        r'<script[^>]*>.*?',
         r'javascript:',
         r'\bon\w+\s*=',
         r'\bonerror\s*=',
@@ -82,6 +81,35 @@ class InputValidator:
         if len(value) > max_length:
             raise ValueError(f"Input exceeds maximum length of {max_length}")
         return html.escape(value)
+
+    @staticmethod
+    def sanitize_string(value: str, max_length: int = 10000) -> str:
+        """Strip dangerous characters and enforce length limits.
+
+        Unlike ``sanitize_html``, this does NOT escape HTML entities.
+        It removes null bytes, control characters, and enforces length.
+        Use this for plain text inputs before sending to LLMs.
+
+        Args:
+            value: Raw input string.
+            max_length: Maximum permitted length (default 10 000).
+
+        Returns:
+            Cleaned string.
+
+        Raises:
+            ValueError: If ``value`` exceeds ``max_length``.
+        """
+        if not isinstance(value, str):
+            value = str(value)
+        if len(value) > max_length:
+            raise ValueError(f"Input exceeds maximum length of {max_length}")
+        # Remove null bytes and most control characters (keep tab, newline, space)
+        cleaned = "".join(
+            ch for ch in value if ch == "\n" or ch == "\t" or (ch >= " " and ch <= "~")
+            or ch in "¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ"
+        )
+        return cleaned.strip()
 
     @classmethod
     def detect_sqli(cls, value: str) -> tuple[bool, str]:

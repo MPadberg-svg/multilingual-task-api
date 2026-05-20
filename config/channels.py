@@ -1,6 +1,7 @@
 """Channels layer configuration for Redis-backed pub/sub.
 
 Loaded by settings to configure the ``channels`` channel layer backend.
+This module is referenced by ``ASGI_APPLICATION`` in ``config/asgi.py``.
 """
 
 import os

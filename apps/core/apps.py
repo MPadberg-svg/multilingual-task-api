@@ -4,14 +4,13 @@ from django.apps import AppConfig
 
 
 class CoreConfig(AppConfig):
-    """Configuration class for the core Django application.
-
-    Attributes:
-        default_auto_field: Default primary key field type.
-        name: Full Python path to the application.
-        verbose_name: Human-readable name for the admin interface.
-    """
+    """Configuration class for the core Django application."""
 
     default_auto_field = "django.db.models.BigAutoField"
     name = "apps.core"
     verbose_name = "Core Platform"
+
+    def ready(self):
+        """Trigger Celery task discovery when Django apps are fully loaded."""
+        from config.celery import discover_tasks
+        discover_tasks()

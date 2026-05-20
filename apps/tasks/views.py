@@ -10,8 +10,10 @@ import logging
 from django.conf import settings
 from django.core.cache import cache
 from django_filters.rest_framework import DjangoFilterBackend
-from rest_framework import filters, viewsets
+from rest_framework import filters, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.response import Response
 
 from apps.tasks.filters import TaskFilter
 from apps.tasks.models import Task
@@ -117,6 +119,28 @@ class TaskViewSet(viewsets.ModelViewSet):
         response = super().retrieve(request, *args, **kwargs)
         cache.set(cache_key, response.data, timeout=CACHE_TTL_DETAIL)
         return response
+
+    @action(detail=True, methods=["post"], url_path="restore")
+    def restore(self, request, pk=None):
+        """Restore a soft-deleted task.
+
+        Args:
+            request: DRF Request.
+            pk: Task UUID.
+
+        Returns:
+            Response with restored task data.
+        """
+        task = self.get_object()
+        if task.is_active:
+            return Response(
+                {"error": "Task is already active"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        task.is_active = True
+        task.save(update_fields=["is_active", "updated_at"])
+        serializer = self.get_serializer(task)
+        return Response(serializer.data)
 
     def perform_create(self, serializer):
         """Create task and invalidate list cache."""

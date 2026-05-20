@@ -13,7 +13,6 @@ All fields respect the project language resolution chain:
 from typing import List, Optional
 from uuid import UUID
 
-import django.utils.timezone as timezone
 import strawberry
 from strawberry.types import Info
 
@@ -24,14 +23,7 @@ from apps.tasks.models import Task
 
 @strawberry.type
 class TaskType:
-    """GraphQL representation of a multilingual Task.
-
-    Attributes:
-        id: UUID primary key.
-        status: Workflow state.
-        is_active: Soft-delete flag.
-        created_at: ISO timestamp string.
-    """
+    """GraphQL representation of a multilingual Task."""
 
     id: UUID
     status: str
@@ -39,272 +31,125 @@ class TaskType:
     created_at: str
 
     @strawberry.field
-    def title(self, info: Info, language: Optional[str] = None) -> str:
-        """Resolve title in requested or context language.
-
-        Falls back to ``en`` then ``'Untitled'``.
-
-        Args:
-            info: Strawberry execution context.
-            language: Override language code.
-
-        Returns:
-            Localised title string.
-        """
-        lang = language or info.context.request.lang
-        task = Task.objects.get(id=self.id)
-        task.set_current_language(lang)
-        return (
-            task.title
-            or task.safe_translation_getter("title", language_code="en")
-            or "Untitled"
-        )
+    def title(self, info: Info) -> str:
+        """Resolve title in the request language."""
+        request = info.context.get("request")
+        lang = getattr(request, "language", "en") if request else "en"
+        return self.safe_translation_getter("title", language_code=lang, any_language=True) or ""
 
     @strawberry.field
-    def description(self, info: Info, language: Optional[str] = None) -> str:
-        """Resolve description in requested or context language.
-
-        Args:
-            info: Strawberry execution context.
-            language: Override language code.
-
-        Returns:
-            Localised description string.
-        """
-        lang = language or info.context.request.lang
-        task = Task.objects.get(id=self.id)
-        task.set_current_language(lang)
-        return task.description or ""
+    def description(self, info: Info) -> str:
+        """Resolve description in the request language."""
+        request = info.context.get("request")
+        lang = getattr(request, "language", "en") if request else "en"
+        return self.safe_translation_getter("description", language_code=lang, any_language=True) or ""
 
     @strawberry.field
-    def translations(self, info: Info) -> List[dict]:
-        """Return all translation records for the task.
-
-        Args:
-            info: Strawberry execution context.
-
-        Returns:
-            List of dicts with ``language``, ``title``, ``description``.
-        """
-        task = Task.objects.get(id=self.id)
+    def translations(self) -> List["TaskTranslationType"]:
+        """Return all translations."""
         return [
-            {
-                "language": t.language_code,
-                "title": t.title,
-                "description": t.description,
-            }
-            for t in task.translations.all()
+            TaskTranslationType(
+                language_code=t.language_code,
+                title=t.title,
+                description=t.description,
+            )
+            for t in self.translations.all()
         ]
 
 
 @strawberry.type
-class OrganizationType:
-    """GraphQL representation of an Organization tenant.
+class TaskTranslationType:
+    """A single language translation for a Task."""
 
-    Attributes:
-        id: UUID primary key.
-        name: Human-readable name.
-        slug: URL-friendly identifier.
-        plan: Billing tier.
-    """
+    language_code: str
+    title: str
+    description: str
+
+
+@strawberry.type
+class OrganizationType:
+    """GraphQL representation of an Organization."""
 
     id: UUID
     name: str
     slug: str
     plan: str
+    is_active: bool
+    created_at: str
 
     @strawberry.field
-    def task_count(self, info: Info) -> int:
-        """Count active tasks scoped to this organization.
-
-        Args:
-            info: Strawberry execution context.
-
-        Returns:
-            Active task count.
-        """
-        return Task.objects.filter(organization_id=self.id, is_active=True).count()
+    def task_count(self) -> int:
+        """Count of active tasks in this organization."""
+        return self.tasks.filter(is_active=True).count()
 
     @strawberry.field
-    def member_count(self, info: Info) -> int:
-        """Count members of this organization.
-
-        Args:
-            info: Strawberry execution context.
-
-        Returns:
-            Member count.
-        """
-        from apps.core.models import OrganizationMember
-
-        return OrganizationMember.objects.filter(organization_id=self.id).count()
+    def member_count(self) -> int:
+        """Count of members in this organization."""
+        return self.members.count()
 
 
 @strawberry.type
 class Query:
-    """GraphQL read operations."""
+    """Read operations for tasks and organizations."""
+
+    @strawberry.field
+    def tasks(self, info: Info, organization_id: Optional[UUID] = None) -> List[TaskType]:
+        """List tasks, optionally filtered by organization."""
+        qs = Task.objects.filter(is_active=True)
+        if organization_id:
+            qs = qs.filter(organization_id=organization_id)
+        return list(qs)
 
     @strawberry.field
     def task(self, info: Info, id: UUID) -> Optional[TaskType]:
-        """Fetch a single active task by UUID.
-
-        Args:
-            info: Strawberry execution context.
-            id: Task UUID.
-
-        Returns:
-            ``TaskType`` or ``None`` if not found.
-        """
+        """Retrieve a single task by ID."""
         try:
-            t = Task.objects.get(id=id, is_active=True)
-            return TaskType(
-                id=t.id,
-                status=t.status,
-                is_active=t.is_active,
-                created_at=str(t.created_at),
-            )
+            return Task.objects.get(id=id, is_active=True)
         except Task.DoesNotExist:
             return None
 
     @strawberry.field
-    def tasks(
-        self,
-        info: Info,
-        status: Optional[str] = None,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> List[TaskType]:
-        """List active tasks with optional filtering and tenant scoping.
-
-        Args:
-            info: Strawberry execution context.
-            status: Filter by workflow state.
-            limit: Maximum results (default 20).
-            offset: Pagination offset.
-
-        Returns:
-            List of ``TaskType`` instances.
-        """
-        qs = Task.objects.filter(is_active=True)
-        if status:
-            qs = qs.filter(status=status)
-        if info.context.request.organization:
-            qs = qs.filter(organization=info.context.request.organization)
-        qs = qs[offset : offset + limit]
-        return [
-            TaskType(
-                id=t.id,
-                status=t.status,
-                is_active=t.is_active,
-                created_at=str(t.created_at),
-            )
-            for t in qs
-        ]
+    def organizations(self, info: Info) -> List[OrganizationType]:
+        """List all active organizations."""
+        return list(Organization.objects.filter(is_active=True))
 
     @strawberry.field
-    def organization(self, info: Info, slug: str) -> Optional[OrganizationType]:
-        """Fetch an active organization by slug.
-
-        Args:
-            info: Strawberry execution context.
-            slug: Organization slug.
-
-        Returns:
-            ``OrganizationType`` or ``None`` if not found.
-        """
+    def organization(self, info: Info, id: UUID) -> Optional[OrganizationType]:
+        """Retrieve a single organization by ID."""
         try:
-            org = Organization.objects.get(slug=slug, is_active=True)
-            return OrganizationType(
-                id=org.id,
-                name=org.name,
-                slug=org.slug,
-                plan=org.plan,
-            )
+            return Organization.objects.get(id=id, is_active=True)
         except Organization.DoesNotExist:
             return None
 
 
 @strawberry.type
 class Mutation:
-    """GraphQL write operations with event publishing."""
+    """Write operations with event publishing."""
 
     @strawberry.mutation
-    def create_task(
-        self,
-        info: Info,
-        title: str,
-        description: str,
-        status: str = "draft",
-    ) -> TaskType:
-        """Create a new multilingual task.
+    def create_task(self, info: Info, title: str, description: str, status: str = "pending") -> TaskType:
+        """Create a new task."""
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        request = info.context.get("request")
+        user = request.user if request and hasattr(request, "user") else User.objects.first()
 
-        Args:
-            info: Strawberry execution context.
-            title: Task title (stored in context language).
-            description: Task description.
-            status: Initial workflow state (default ``draft``).
-
-        Returns:
-            Created ``TaskType``.
-        """
         task = Task.objects.create(
-            user=info.context.request.user,
-            organization=info.context.request.organization,
+            user=user,
             status=status,
         )
-        lang = info.context.request.lang or "en"
-        task.set_current_language(lang)
+        task.set_current_language("en")
         task.title = title
         task.description = description
         task.save()
 
-        EventPublisher().publish_task_event(
+        publisher = EventPublisher()
+        publisher.publish_task_event(
             str(task.organization.id) if task.organization else "global",
             "created",
-            {"id": str(task.id), "title": title},
+            {"id": str(task.id), "status": task.status, "user_id": str(user.id)},
         )
-        return TaskType(
-            id=task.id,
-            status=task.status,
-            is_active=task.is_active,
-            created_at=str(task.created_at),
-        )
-
-    @strawberry.mutation
-    def update_task_status(
-        self,
-        info: Info,
-        id: UUID,
-        status: str,
-    ) -> Optional[TaskType]:
-        """Update a task's status.
-
-        Args:
-            info: Strawberry execution context.
-            id: Task UUID.
-            status: New workflow state.
-
-        Returns:
-            Updated ``TaskType`` or ``None`` if not found.
-        """
-        try:
-            task = Task.objects.get(id=id)
-            task.status = status
-            task.save()
-
-            EventPublisher().publish_task_event(
-                str(task.organization.id) if task.organization else "global",
-                "updated",
-                {"id": str(task.id), "status": status},
-            )
-            return TaskType(
-                id=task.id,
-                status=task.status,
-                is_active=task.is_active,
-                created_at=str(task.created_at),
-            )
-        except Task.DoesNotExist:
-            return None
+        return task
 
 
 schema = strawberry.Schema(query=Query, mutation=Mutation)

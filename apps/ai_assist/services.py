@@ -11,6 +11,7 @@ Cache keys follow the project convention:
 import hashlib
 import json
 import logging
+import re
 from typing import Any
 
 from django.conf import settings
@@ -43,14 +44,32 @@ def _make_cache_key(user_id: str, lang: str, params: dict) -> str:
 def _safe_json_parse(raw: str) -> dict[str, Any]:
     """Fail-safe JSON parser with fallback to empty dict.
 
+    Handles markdown fences, trailing commas, and plain text.
+
     Args:
         raw: Raw string from LLM response.
 
     Returns:
         Parsed dict or empty dict on failure.
     """
+    if not raw or not isinstance(raw, str):
+        return {}
+
+    # Strip markdown fences
+    cleaned = raw.strip()
+    if cleaned.startswith("```json"):
+        cleaned = cleaned[7:]
+    elif cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+    if cleaned.endswith("```"):
+        cleaned = cleaned[:-3]
+    cleaned = cleaned.strip()
+
+    # Remove trailing commas before closing braces/brackets
+    cleaned = re.sub(r",\s*([\}\]])", r"\1", cleaned)
+
     try:
-        return json.loads(raw)
+        return json.loads(cleaned)
     except (json.JSONDecodeError, TypeError) as exc:
         logger.warning("JSON parse failed: %s", exc)
         return {}
@@ -105,11 +124,12 @@ class AIService:
         if cached is not None:
             return cached
 
-        prompt = self.template_manager.render("task_translation", lang=lang, user_input=sanitized)
+        prompt = self.template_manager.render("task_translation", user_input=sanitized)
         response = self.client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
+            max_tokens=settings.OPENAI_MAX_TOKENS,
         )
         result = _safe_json_parse(response.choices[0].message.content)
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
@@ -144,11 +164,12 @@ class AIService:
         if cached is not None:
             return cached
 
-        prompt = self.template_manager.render("prompt_evaluation", lang=lang, user_input=sanitized)
+        prompt = self.template_manager.render("prompt_evaluation", user_input=sanitized)
         response = self.client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
+            max_tokens=settings.OPENAI_MAX_TOKENS,
         )
         result = _safe_json_parse(response.choices[0].message.content)
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
@@ -183,12 +204,34 @@ class AIService:
         if cached is not None:
             return cached
 
-        prompt = self.template_manager.render("rlhf_generation", lang=lang, user_input=sanitized)
+        prompt = self.template_manager.render("rlhf_generation", user_input=sanitized)
         response = self.client.chat.completions.create(
             model=settings.OPENAI_MODEL,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.4,
+            max_tokens=settings.OPENAI_MAX_TOKENS,
         )
         result = _safe_json_parse(response.choices[0].message.content)
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
         return result
+
+    def _parse_json_response(self, raw: str) -> dict[str, Any]:
+        """Internal JSON parser for test compatibility.
+
+        Args:
+            raw: Raw string from LLM response.
+
+        Returns:
+            Parsed dict.
+
+        Raises:
+            ValueError: On unparseable input.
+        """
+        result = _safe_json_parse(raw)
+        if not result:
+            raise ValueError("Unparseable JSON response from LLM")
+        return result
+
+
+# Singleton instance for import convenience
+_ai_service = AIService()
