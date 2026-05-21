@@ -1,6 +1,7 @@
 """Multi-tenancy and audit models for the core app.
 
 Provides:
+    - ``CustomUser``: UUID-indexed, email-authenticated user model.
     - ``Organization``: Tenant container with plan-based limits.
     - ``OrganizationMember``: RBAC membership linking users to orgs.
     - ``AuditLog``: Immutable audit trail for security and compliance.
@@ -8,26 +9,78 @@ Provides:
 
 import uuid
 
-from django.contrib.auth import get_user_model
+from django.conf import settings
+from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.db import models
 
-User = get_user_model()
+
+class CustomUserManager(BaseUserManager):
+    """Custom manager for CustomUser where email is the unique identifier."""
+
+    def create_user(self, email, password=None, **extra_fields):
+        """Create and save a User with the given email and password."""
+        if not email:
+            raise ValueError("The Email field must be set")
+        email = self.normalize_email(email)
+        extra_fields.setdefault("is_active", True)
+        user = self.model(email=email, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def create_superuser(self, email, password=None, **extra_fields):
+        """Create and save a SuperUser with the given email and password."""
+        extra_fields.setdefault("is_staff", True)
+        extra_fields.setdefault("is_superuser", True)
+
+        if extra_fields.get("is_staff") is not True:
+            raise ValueError("Superuser must have is_staff=True.")
+        if extra_fields.get("is_superuser") is not True:
+            raise ValueError("Superuser must have is_superuser=True.")
+
+        return self.create_user(email, password, **extra_fields)
+
+
+class CustomUser(AbstractBaseUser, PermissionsMixin):
+    """Custom User model indexed by UUID and authenticated via email."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    email = models.EmailField(unique=True, max_length=254)
+    first_name = models.CharField(max_length=150, blank=True)
+    last_name = models.CharField(max_length=150, blank=True)
+    is_staff = models.BooleanField(default=False)
+    is_active = models.BooleanField(default=True)
+    date_joined = models.DateTimeField(auto_now_add=True)
+    last_login_ip = models.GenericIPAddressField(null=True, blank=True)
+
+    objects = CustomUserManager()
+
+    USERNAME_FIELD = "email"
+    REQUIRED_FIELDS = []
+
+    class Meta:
+        db_table = "core_user"
+        verbose_name = "user"
+        verbose_name_plural = "users"
+        ordering = ["-date_joined"]
+        indexes = [
+            models.Index(fields=["email"]),
+            models.Index(fields=["is_active", "is_staff"]),
+        ]
+
+    def __str__(self):
+        return self.email
+
+    def get_full_name(self):
+        full = f"{self.first_name} {self.last_name}".strip()
+        return full or self.email
+
+    def get_short_name(self):
+        return self.first_name or self.email.split("@")[0]
 
 
 class Organization(models.Model):
-    """Tenant container with plan-based resource limits.
-
-    Attributes:
-        id: UUID primary key.
-        name: Human-readable name.
-        slug: Unique URL-friendly identifier.
-        plan: Billing tier (free, starter, professional, enterprise).
-        max_users: Seat limit.
-        max_tasks: Task limit.
-        max_ai_requests: Monthly AI request limit.
-        is_active: Soft-delete flag.
-        created_at: Timestamp.
-    """
+    """Tenant container with plan-based resource limits."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     name = models.CharField(max_length=255)
@@ -59,16 +112,7 @@ class Organization(models.Model):
 
 
 class OrganizationMember(models.Model):
-    """RBAC membership linking a user to an organization.
-
-    Attributes:
-        id: UUID primary key.
-        organization: Parent organization.
-        user: Django user instance.
-        role: Access level (viewer, contributor, admin, owner).
-        is_billing_contact: Whether user receives invoices.
-        joined_at: Timestamp.
-    """
+    """RBAC membership linking a user to an organization."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(
@@ -77,7 +121,7 @@ class OrganizationMember(models.Model):
         related_name="members",
     )
     user = models.ForeignKey(
-        User,
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="organization_memberships",
     )
@@ -106,20 +150,7 @@ class OrganizationMember(models.Model):
 
 
 class AuditLog(models.Model):
-    """Immutable audit trail for security and compliance.
-
-    Attributes:
-        id: UUID primary key.
-        organization: Optional tenant scope.
-        user: Actor (nullable for system actions).
-        action: Categorised action type.
-        resource_type: Affected model name.
-        resource_id: Affected instance identifier.
-        ip_address: Client IP (nullable).
-        user_agent: Client user agent string.
-        metadata: Arbitrary JSON context.
-        created_at: Timestamp.
-    """
+    """Immutable audit trail for security and compliance."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(
@@ -130,7 +161,7 @@ class AuditLog(models.Model):
         blank=True,
     )
     user = models.ForeignKey(
-        User,
+        settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,

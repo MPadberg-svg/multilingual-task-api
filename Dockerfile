@@ -5,8 +5,12 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y gcc libpq-dev && rm -rf /var/lib/apt/lists/*
 
+# Create and activate a virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Production
 FROM python:3.11-slim
@@ -15,11 +19,15 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y libpq5 curl && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /root/.local /root/.local
+# Copy the virtual environment from the builder
+COPY --from=builder /opt/venv /opt/venv
+
+# Ensure the virtual environment is used
+ENV PATH="/opt/venv/bin:$PATH"
+
 COPY . .
 
-ENV PATH=/root/.local/bin:$PATH
-
+# Set up the non-root user
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 

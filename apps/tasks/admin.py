@@ -44,6 +44,11 @@ class TaskAdmin(TranslatableAdmin):
     )
     actions = ["restore_tasks"]
 
+    @admin.display(description="Title")
+    def display_title(self, obj) -> str:
+        """Safely fetch the title across translations for list display view."""
+        return obj.safe_translation_getter("title", any_language=True) or str(obj.id)
+
     def restore_tasks(self, request, queryset) -> None:
         """Bulk restore soft-deleted tasks.
 

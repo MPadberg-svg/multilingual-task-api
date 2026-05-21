@@ -74,7 +74,7 @@ class RequestLoggingMiddleware(MiddlewareMixin):
             "query_string": request.GET.urlencode(),
             "client_ip": self._get_client_ip(request),
         }
-        logger.info(json.dumps(log_data))
+        logger.info(json.dumps(log_data, default=str))
 
     def process_response(self, request: HttpRequest, response: HttpResponse) -> HttpResponse:
         """Log outgoing response with status code and correlation context."""
@@ -91,7 +91,7 @@ class RequestLoggingMiddleware(MiddlewareMixin):
             "status_code": response.status_code,
             "client_ip": self._get_client_ip(request),
         }
-        logger.info(json.dumps(log_data))
+        logger.info(json.dumps(log_data, default=str))
         return response
 
     @staticmethod

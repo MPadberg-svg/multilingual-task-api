@@ -3,7 +3,7 @@
 Provides:
     - ``TaskType``: Translatable task with lazy title/description resolution.
     - ``OrganizationType``: Tenant with computed task/member counts.
-    - ``Query``: Read operations with tenant scoping.
+    - ``Query``: Read operations with tenant scoping and auth.
     - ``Mutation``: Write operations with event publishing.
 
 All fields respect the project language resolution chain:
@@ -94,30 +94,64 @@ class Query:
 
     @strawberry.field
     def tasks(self, info: Info, organization_id: Optional[UUID] = None) -> List[TaskType]:
-        """List tasks, optionally filtered by organization."""
-        qs = Task.objects.filter(is_active=True)
+        """List tasks scoped to the authenticated user's organizations."""
+        request = info.context.get("request")
+        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+            return []
+
+        qs = Task.objects.filter(
+            is_active=True,
+            organization__members__user=request.user,
+        ).select_related("organization").prefetch_related("translations")
+
         if organization_id:
             qs = qs.filter(organization_id=organization_id)
+
         return list(qs)
 
     @strawberry.field
     def task(self, info: Info, id: UUID) -> Optional[TaskType]:
-        """Retrieve a single task by ID."""
+        """Retrieve a single task by ID, scoped to user's organizations."""
+        request = info.context.get("request")
+        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+            return None
+
         try:
-            return Task.objects.get(id=id, is_active=True)
+            return Task.objects.get(
+                id=id,
+                is_active=True,
+                organization__members__user=request.user,
+            )
         except Task.DoesNotExist:
             return None
 
     @strawberry.field
     def organizations(self, info: Info) -> List[OrganizationType]:
-        """List all active organizations."""
-        return list(Organization.objects.filter(is_active=True))
+        """List organizations the user is a member of."""
+        request = info.context.get("request")
+        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+            return []
+
+        return list(
+            Organization.objects.filter(
+                is_active=True,
+                members__user=request.user,
+            ).prefetch_related("members", "tasks")
+        )
 
     @strawberry.field
     def organization(self, info: Info, id: UUID) -> Optional[OrganizationType]:
-        """Retrieve a single organization by ID."""
+        """Retrieve a single organization by ID if user is a member."""
+        request = info.context.get("request")
+        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+            return None
+
         try:
-            return Organization.objects.get(id=id, is_active=True)
+            return Organization.objects.get(
+                id=id,
+                is_active=True,
+                members__user=request.user,
+            )
         except Organization.DoesNotExist:
             return None
 
@@ -127,15 +161,21 @@ class Mutation:
     """Write operations with event publishing."""
 
     @strawberry.mutation
-    def create_task(self, info: Info, title: str, description: str, status: str = "pending") -> TaskType:
-        """Create a new task."""
-        from django.contrib.auth import get_user_model
-        User = get_user_model()
+    def create_task(self, info: Info, title: str, description: str, status: str = "pending") -> Optional[TaskType]:
+        """Create a new task for the authenticated user."""
         request = info.context.get("request")
-        user = request.user if request and hasattr(request, "user") else User.objects.first()
+        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+            return None
+
+        user = request.user
+
+        # Get user's primary organization
+        membership = user.organization_memberships.select_related("organization").first()
+        organization = membership.organization if membership else None
 
         task = Task.objects.create(
             user=user,
+            organization=organization,
             status=status,
         )
         task.set_current_language("en")
@@ -145,7 +185,7 @@ class Mutation:
 
         publisher = EventPublisher()
         publisher.publish_task_event(
-            str(task.organization.id) if task.organization else "global",
+            str(organization.id) if organization else "global",
             "created",
             {"id": str(task.id), "status": task.status, "user_id": str(user.id)},
         )

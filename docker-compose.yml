@@ -42,12 +42,7 @@ services:
       - "6379:6379"
     networks:
       - backend
-    command: >
-      redis-server
-      --appendonly yes
-      --appendfsync everysec
-      --maxmemory 256mb
-      --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 256mb --maxmemory-policy allkeys-lru
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -60,15 +55,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: mltask-api
-    command: >
-      sh -c "python manage.py migrate --noinput &&
-             gunicorn config.wsgi:application
-             --bind 0.0.0.0:8000
-             --workers 4
-             --worker-class sync
-             --timeout 120
-             --keep-alive 5
-             --access-logfile -"
+    command: sh -c "python manage.py migrate --noinput && gunicorn config.asgi:application --bind 0.0.0.0:8000 --workers 4 --worker-class uvicorn.workers.UvicornWorker --timeout 120 --keep-alive 5 --access-logfile -"
     volumes:
       - .:/app
     ports:
@@ -94,12 +81,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: mltask-celery-worker
-    command: >
-      celery -A config.celery worker
-      --loglevel=info
-      --concurrency=4
-      --queues=default,ai_assist,analytics
-      --hostname=worker@%h
+    command: celery -A config.celery worker --loglevel=info --concurrency=4 --queues=default,ai_assist,analytics --hostname=worker@%h
     volumes:
       - .:/app
     env_file:
@@ -117,10 +99,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: mltask-celery-beat
-    command: >
-      celery -A config.celery beat
-      --loglevel=info
-      --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    command: celery -A config.celery beat --loglevel=info --scheduler django_celery_beat.schedulers:DatabaseScheduler
     volumes:
       - .:/app
     env_file:

@@ -25,23 +25,22 @@ faker_fr = Faker("fr_FR")
 
 
 class UserFactory(factory.django.DjangoModelFactory):
-    """Generate Django user instances with hashed passwords."""
+    """Generate CustomUser instances with email authentication and hashed passwords."""
 
     class Meta:
         model = User
+        django_get_or_create = ("email",)
 
-    username = factory.Sequence(lambda n: f"user{n}")
-    email = factory.LazyAttribute(lambda obj: f"{obj.username}@example.com")
+    email = factory.Sequence(lambda n: f"user{n}@example.com")
+    first_name = factory.Faker("first_name")
+    last_name = factory.Faker("last_name")
+    is_active = True
+    is_staff = False
     password = factory.PostGenerationMethodCall("set_password", "testpass123")
 
 
 class TaskFactory(factory.django.DjangoModelFactory):
-    """Generate Task instances with EN/ES/FR translations pre-populated.
-
-    The ``translations`` post-generation hook sets up django-parler
-    translations for all three supported languages using locale-aware
-    Faker data.
-    """
+    """Generate Task instances with EN/ES/FR translations pre-populated."""
 
     class Meta:
         model = Task
@@ -51,29 +50,20 @@ class TaskFactory(factory.django.DjangoModelFactory):
 
     @factory.post_generation
     def translations(self, create, extracted, **kwargs):
-        """Populate EN/ES/FR translations after the Task is created.
-
-        Args:
-            create: Whether the instance was created (vs. built).
-            extracted: Any explicitly passed translation data.
-            **kwargs: Additional keyword arguments.
-        """
+        """Populate EN/ES/FR translations after the Task is created."""
         if not create:
             return
 
-        # English
         self.set_current_language("en")
         self.title = faker_en.sentence(nb_words=4)
         self.description = faker_en.paragraph()
         self.save()
 
-        # Spanish
         self.set_current_language("es")
         self.title = faker_es.sentence(nb_words=4)
         self.description = faker_es.paragraph()
         self.save()
 
-        # French
         self.set_current_language("fr")
         self.title = faker_fr.sentence(nb_words=4)
         self.description = faker_fr.paragraph()

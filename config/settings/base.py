@@ -57,7 +57,7 @@ MIDDLEWARE: list[str] = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.core.middleware.RequestLoggingMiddleware",
-    "apps.analytics.middleware.ResponseTimeMiddleware",
+    "apps.analytics.middleware.RequestTimingMiddleware",
 ]
 
 ROOT_URLCONF: str = "config.urls"
@@ -85,6 +85,8 @@ DEFAULT_AUTO_FIELD: str = "django.db.models.BigAutoField"
 # =============================================================================
 # Authentication & Password Validation
 # =============================================================================
+AUTH_USER_MODEL: str = "core.CustomUser"
+
 AUTH_PASSWORD_VALIDATORS: list[dict[str, str]] = [
     {
         "NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator",
@@ -311,3 +313,11 @@ OPENAI_TEMPERATURE: float = config("OPENAI_TEMPERATURE", default=0.7, cast=float
 SECURE_BROWSER_XSS_FILTER: bool = True
 SECURE_CONTENT_TYPE_NOSNIFF: bool = True
 X_FRAME_OPTIONS: str = "DENY"
+
+CSRF_TRUSTED_ORIGINS: list[str] = [
+    "https://*.github.dev",
+    "https://*.app.github.dev",
+    "https://localhost:8000",
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+]

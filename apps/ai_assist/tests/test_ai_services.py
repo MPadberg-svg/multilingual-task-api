@@ -9,30 +9,36 @@ import json
 from unittest.mock import Mock, patch
 
 import pytest
-from django.test import override_settings
+from django.test import TestCase, override_settings
 
-from apps.ai_assist.services import AIService, _ai_service
+from apps.ai_assist.services import AIService
 
 
 # =============================================================================
 # _parse_json_response
 # =============================================================================
 
-@override_settings(
-    OPENAI_API_KEY="test-key",
-    OPENAI_MODEL="gpt-4o-mini",
-    OPENAI_MAX_TOKENS=2000,
-    OPENAI_TEMPERATURE=0.7,
-)
-class TestParseJsonResponse:
+class TestParseJsonResponse(TestCase):
     """Validate the JSON sanitisation helper."""
 
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_MODEL="gpt-4o-mini",
+        OPENAI_MAX_TOKENS=2000,
+        OPENAI_TEMPERATURE=0.7,
+    )
     def test_clean_json_parsing(self):
         """Plain JSON should parse without modification."""
         service = AIService()
         result = service._parse_json_response('{"key": "value"}')
         assert result == {"key": "value"}
 
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_MODEL="gpt-4o-mini",
+        OPENAI_MAX_TOKENS=2000,
+        OPENAI_TEMPERATURE=0.7,
+    )
     def test_markdown_fence_stripping(self):
         """Markdown fenced blocks should be stripped before parsing."""
         service = AIService()
@@ -41,12 +47,24 @@ class TestParseJsonResponse:
         )
         assert result == {"key": "value"}
 
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_MODEL="gpt-4o-mini",
+        OPENAI_MAX_TOKENS=2000,
+        OPENAI_TEMPERATURE=0.7,
+    )
     def test_trailing_comma_handling(self):
         """Trailing commas before closing braces should be removed."""
         service = AIService()
         result = service._parse_json_response('{"key": "value",}')
         assert result == {"key": "value"}
 
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_MODEL="gpt-4o-mini",
+        OPENAI_MAX_TOKENS=2000,
+        OPENAI_TEMPERATURE=0.7,
+    )
     def test_invalid_json_raises_valueerror(self):
         """Non-JSON input must raise ``ValueError``."""
         service = AIService()
@@ -58,10 +76,10 @@ class TestParseJsonResponse:
 # suggest_task_translations
 # =============================================================================
 
-@override_settings(OPENAI_API_KEY="test-key")
-class TestSuggestTaskTranslations:
+class TestSuggestTaskTranslations(TestCase):
     """Validate the task translation endpoint logic."""
 
+    @override_settings(OPENAI_API_KEY="test-key")
     @patch("apps.ai_assist.services.OpenAI")
     def test_en_es_fr_structure(self, mock_openai_cls):
         """Response must contain ``en``, ``es``, ``fr`` with title/description."""
@@ -89,6 +107,7 @@ class TestSuggestTaskTranslations:
         assert "en" in result and "es" in result and "fr" in result
         assert "title" in result["en"] and "description" in result["en"]
 
+    @override_settings(OPENAI_API_KEY="test-key")
     @patch("apps.ai_assist.services.OpenAI")
     def test_caching_deduplication(self, mock_openai_cls):
         """Identical inputs must hit cache and call OpenAI only once."""
@@ -122,10 +141,10 @@ class TestSuggestTaskTranslations:
 # evaluate_prompt_quality
 # =============================================================================
 
-@override_settings(OPENAI_API_KEY="test-key")
-class TestEvaluatePromptQuality:
+class TestEvaluatePromptQuality(TestCase):
     """Validate the prompt quality evaluation logic."""
 
+    @override_settings(OPENAI_API_KEY="test-key")
     @patch("apps.ai_assist.services.OpenAI")
     def test_score_range_and_type(self, mock_openai_cls):
         """Score must be an integer in [0, 100]; improvements list; analysis str."""
@@ -160,10 +179,10 @@ class TestEvaluatePromptQuality:
 # generate_rlhf_test_cases
 # =============================================================================
 
-@override_settings(OPENAI_API_KEY="test-key")
-class TestGenerateRlhfTestCases:
+class TestGenerateRlhfTestCases(TestCase):
     """Validate the RLHF test case generation logic."""
 
+    @override_settings(OPENAI_API_KEY="test-key")
     @patch("apps.ai_assist.services.OpenAI")
     def test_jsonl_structure(self, mock_openai_cls):
         """Response must contain instruction, input, output, metadata with edge_cases."""

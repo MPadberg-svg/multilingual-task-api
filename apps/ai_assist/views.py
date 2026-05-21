@@ -35,7 +35,9 @@ logger = logging.getLogger(__name__)
                 "type": "object",
                 "properties": {
                     "description": {"type": "string"},
+                    "lang": {"type": "string", "default": "en"},
                 },
+                "required": ["description"],
             }
         }
     },
@@ -65,11 +67,18 @@ def suggest_task(request):
         Response with translated titles and descriptions, or 400/502.
     """
     description = request.data.get("description", "")
+    lang = request.data.get("lang", "en")
+
     if not description or len(description.strip()) == 0:
         return Response({"error": "Description is required"}, status=400)
 
     try:
-        result = _ai_service.suggest_task_translations(description)
+        # Aligned with services.py signature requirements
+        result = _ai_service.suggest_task_translations(
+            user_id=str(request.user.id),
+            lang=lang,
+            user_input=description
+        )
         return Response(result)
     except Exception as exc:
         logger.error("Translation failed: %s", exc)
@@ -86,7 +95,9 @@ def suggest_task(request):
                 "type": "object",
                 "properties": {
                     "prompt_text": {"type": "string"},
+                    "lang": {"type": "string", "default": "en"},
                 },
+                "required": ["prompt_text"],
             }
         }
     },
@@ -116,11 +127,18 @@ def evaluate_quality(request):
         Response with score, improvements list, and analysis, or 400/502.
     """
     prompt_text = request.data.get("prompt_text", "")
+    lang = request.data.get("lang", "en")
+
     if not prompt_text or len(prompt_text.strip()) == 0:
         return Response({"error": "Prompt text is required"}, status=400)
 
     try:
-        result = _ai_service.evaluate_prompt_quality(prompt_text)
+        # Aligned with services.py signature requirements
+        result = _ai_service.evaluate_prompt_quality(
+            user_id=str(request.user.id),
+            lang=lang,
+            user_input=prompt_text
+        )
         return Response(result)
     except Exception as exc:
         logger.error("Quality evaluation failed: %s", exc)
@@ -137,7 +155,9 @@ def evaluate_quality(request):
                 "type": "object",
                 "properties": {
                     "code_snippet": {"type": "string"},
+                    "lang": {"type": "string", "default": "en"},
                 },
+                "required": ["code_snippet"],
             }
         }
     },
@@ -168,11 +188,18 @@ def generate_test_cases(request):
         Response with instruction, input, output, and metadata, or 400/502.
     """
     code_snippet = request.data.get("code_snippet", "")
+    lang = request.data.get("lang", "en")
+
     if not code_snippet or len(code_snippet.strip()) == 0:
         return Response({"error": "Code snippet is required"}, status=400)
 
     try:
-        result = _ai_service.generate_rlhf_test_cases(code_snippet)
+        # Aligned with services.py signature requirements
+        result = _ai_service.generate_rlhf_test_cases(
+            user_id=str(request.user.id),
+            lang=lang,
+            user_input=code_snippet
+        )
         return Response(result)
     except Exception as exc:
         logger.error("Test generation failed: %s", exc)
