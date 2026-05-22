@@ -60,9 +60,11 @@ class Task(TranslatableModel):
     )
 
     class Meta:
+        ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["user", "is_active", "status"]),
             models.Index(fields=["organization", "is_active", "status"]),
+            models.Index(fields=["-created_at"]),
         ]
 
     def __str__(self):
