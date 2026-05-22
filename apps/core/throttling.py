@@ -11,11 +11,33 @@ import logging
 from typing import Any
 
 from rest_framework.request import Request
-from rest_framework.throttling import SimpleRateThrottle
+from rest_framework.throttling import AnonRateThrottle, SimpleRateThrottle
 from rest_framework.views import View
 
 
 logger: logging.Logger = logging.getLogger(__name__)
+
+# Paths that should never be rate-limited (health probes, metrics)
+HEALTH_PROBE_PATHS: set[str] = {
+    "/api/v1/live/",
+    "/api/v1/health/",
+    "/api/v1/ready/",
+    "/api/v1/metrics/",
+}
+
+
+class HealthCheckAnonRateThrottle(AnonRateThrottle):
+    """Anonymous rate throttle that exempts health probe endpoints.
+
+    Docker healthchecks hit /api/v1/live/ every 30s from 127.0.0.1.
+    Without this exemption, AnonRateThrottle (100/day) blocks them.
+    """
+
+    def allow_request(self, request: Request, view: View) -> bool:
+        """Skip throttling for health probe paths."""
+        if request.path in HEALTH_PROBE_PATHS:
+            return True
+        return super().allow_request(request, view)
 
 
 class AIAssistRateThrottle(SimpleRateThrottle):

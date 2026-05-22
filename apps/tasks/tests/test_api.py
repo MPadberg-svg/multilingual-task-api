@@ -1,7 +1,7 @@
 """API integration tests for the Task management endpoints.
 
 Covers multilingual resolution, fallback behavior, CRUD operations,
-soft-delete, and restore functionality.
+soft-delete, restore functionality, and security/edge cases.
 """
 
 from django.contrib.auth import get_user_model
@@ -130,3 +130,92 @@ class TestTaskAPI(APITestCase):
         self.assertEqual(response.status_code, 200)
         task.refresh_from_db()
         self.assertTrue(task.is_active)
+
+    # ------------------------------------------------------------------
+    # Security & Edge Case Tests
+    # ------------------------------------------------------------------
+
+    def test_unauthenticated_user_cannot_list_tasks(self) -> None:
+        """API must reject unauthenticated requests with 401."""
+        client = APIClient()  # no auth
+        response = client.get(reverse("task-list"))
+        self.assertEqual(response.status_code, 401)
+
+    def test_user_cannot_see_other_users_tasks(self) -> None:
+        """Tenant isolation: users must only see their own tasks."""
+        other_user = User.objects.create_user(
+            email="other@example.com",
+            password="otherpass",
+        )
+        other_task = Task.objects.create(user=other_user, status="pending")
+        other_task.set_current_language("en")
+        other_task.title = "Other User Task"
+        other_task.save()
+
+        response = self.client.get(reverse("task-list"))
+        self.assertNotIn("Other User Task", str(response.data))
+
+    def test_cannot_restore_another_users_task(self) -> None:
+        """User cannot restore a task that belongs to another user."""
+        other_user = User.objects.create_user(
+            email="hacker@example.com",
+            password="hackpass",
+        )
+        other_task = Task.objects.create(
+            user=other_user,
+            status="pending",
+            is_active=False,
+        )
+
+        response = self.client.post(
+            reverse("task-restore", kwargs={"pk": str(other_task.id)}),
+        )
+        self.assertIn(response.status_code, [403, 404])
+
+    def test_task_list_is_paginated(self) -> None:
+        """Response must contain pagination keys."""
+        response = self.client.get(reverse("task-list"))
+        self.assertIn("count", response.data)
+        self.assertIn("results", response.data)
+
+    def test_invalid_status_returns_400(self) -> None:
+        """Creating a task with an invalid status must return 400."""
+        data = {
+            "translations": {
+                "en": {
+                    "title": "Bad Task",
+                    "description": "",
+                },
+            },
+            "status": "invalid_status_xyz",
+        }
+
+        response = self.client.post(
+            reverse("task-list"),
+            data,
+            format="json",
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_filter_tasks_by_status(self) -> None:
+        """Filtering by status must return only matching tasks."""
+        Task.objects.create(user=self.user, status="completed")
+        Task.objects.create(user=self.user, status="pending")
+
+        response = self.client.get(reverse("task-list") + "?status=completed")
+        self.assertEqual(response.status_code, 200)
+        for item in response.data["results"]:
+            self.assertEqual(item["status"], "completed")
+
+    def test_restore_already_active_task_returns_400(self) -> None:
+        """Restoring an active task must return 400."""
+        task = Task.objects.create(
+            user=self.user,
+            status="pending",
+            is_active=True,
+        )
+
+        response = self.client.post(
+            reverse("task-restore", kwargs={"pk": str(task.id)}),
+        )
+        self.assertEqual(response.status_code, 400)

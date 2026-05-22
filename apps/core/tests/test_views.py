@@ -6,6 +6,32 @@ from rest_framework.test import APIClient
 
 
 @pytest.mark.django_db
+class TestLiveness:
+    """Tests for the /api/v1/live/ liveness probe endpoint."""
+
+    def setup_method(self):
+        self.client = APIClient()
+
+    def test_live_returns_200(self):
+        """Liveness endpoint must return HTTP 200 immediately."""
+        response = self.client.get("/api/v1/live/")
+        assert response.status_code == 200
+
+    def test_live_contains_status_alive(self):
+        """Response must contain {'status': 'alive'}."""
+        response = self.client.get("/api/v1/live/")
+        data = response.json()
+        assert data == {"status": "alive"}
+
+    def test_live_is_public_no_auth_required(self):
+        """Liveness endpoint must be accessible without authentication."""
+        client = APIClient()
+        response = client.get("/api/v1/live/")
+        assert response.status_code == 200
+        assert response.status_code != 401
+
+
+@pytest.mark.django_db
 class TestHealthCheck:
     """Tests for the /api/v1/health/ endpoint."""
 
@@ -34,7 +60,6 @@ class TestHealthCheck:
 
     def test_health_is_public_no_auth_required(self):
         """Health endpoint must be accessible without any authentication."""
-        # Use a fresh unauthenticated client
         client = APIClient()
         response = client.get("/api/v1/health/")
         assert response.status_code == 200

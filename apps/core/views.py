@@ -32,17 +32,33 @@ def _coerce_int(value: Any) -> int:
     return 0
 
 
-class HealthCheckView(APIView):
-    """Health check endpoint for dependencies."""
+class LivenessView(APIView):
+    """Lightweight liveness probe — returns 200 if the app process is running.
+
+    Docker/Kubernetes uses this to know if the container should be restarted.
+    No external dependency checks — just confirms Django is alive.
+    """
 
     permission_classes = [AllowAny]
 
     def get(self, request, *args, **kwargs) -> Response:
-        """Return connectivity status for core dependencies."""
+        return Response({"status": "alive"})
+
+
+class HealthCheckView(APIView):
+    """Health check endpoint for core dependencies.
+
+    Checks DB and Redis only. OpenAI is excluded to avoid slow/heavy
+    calls on frequent health probes.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs) -> Response:
+        """Return connectivity status for DB and Redis."""
         checks = {
             "db": self._check_db(),
             "redis": self._check_redis(),
-            "openai": self._check_openai(),
         }
         overall_status = "ok" if all(
             result["status"] == "ok" for result in checks.values()
@@ -82,32 +98,6 @@ class HealthCheckView(APIView):
                 "latency_ms": round((time.perf_counter() - start) * 1000.0, 2),
             }
         except RedisError as exc:
-            return {"status": "down", "error": str(exc)}
-
-    @staticmethod
-    def _check_openai() -> dict[str, Any]:
-        """Check OpenAI API connectivity when configured."""
-        if not settings.OPENAI_API_KEY:
-            return {"status": "not_configured"}
-        try:
-            import openai
-            from openai import OpenAIError
-        except ImportError as exc:
-            return {"status": "not_installed", "error": str(exc)}
-
-        start = time.perf_counter()
-        try:
-            client = openai.OpenAI(
-                api_key=settings.OPENAI_API_KEY,
-                timeout=5.0,
-                max_retries=0,
-            )
-            client.models.list()
-            return {
-                "status": "ok",
-                "latency_ms": round((time.perf_counter() - start) * 1000.0, 2),
-            }
-        except OpenAIError as exc:
             return {"status": "down", "error": str(exc)}
 
 
