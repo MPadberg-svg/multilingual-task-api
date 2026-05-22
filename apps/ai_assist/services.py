@@ -1,4 +1,4 @@
-"""AI Assist service layer with security hardening.
+"""AI Assist service layer with security hardening and circuit breaker resilience.
 
 Provides ``AIService`` for LLM-backed task operations including translation
 suggestions, prompt quality evaluation, and RLHF test-case generation.
@@ -17,6 +17,7 @@ from typing import Any
 from django.conf import settings
 from django.core.cache import cache
 
+from apps.ai_assist.circuit_breaker import CircuitOpenError, openai_circuit_breaker
 from apps.ai_assist.prompt_templates import PromptTemplateManager
 from apps.core.security import InputValidator
 
@@ -95,6 +96,29 @@ class AIService:
             self._client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
         return self._client
 
+    def _call_llm(self, prompt: str, temperature: float = 0.3) -> str:
+        """
+        Call OpenAI through the circuit breaker.
+        Falls back gracefully if circuit is OPEN.
+        """
+        def _raw_call() -> str:
+            response = self.client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=temperature,
+                max_tokens=settings.OPENAI_MAX_TOKENS,
+            )
+            return response.choices[0].message.content
+
+        try:
+            return openai_circuit_breaker.call(_raw_call)
+        except CircuitOpenError as e:
+            logger.warning("OpenAI circuit is OPEN: %s", e)
+            return '{"error": "AI service temporarily unavailable", "retry_after": 60}'
+        except Exception as e:
+            logger.error("OpenAI call failed: %s", e)
+            raise
+
     def suggest_task_translations(
         self,
         user_id: str,
@@ -125,13 +149,8 @@ class AIService:
             return cached
 
         prompt = self.template_manager.render("task_translation", user_input=sanitized)
-        response = self.client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=settings.OPENAI_MAX_TOKENS,
-        )
-        result = _safe_json_parse(response.choices[0].message.content)
+        raw = self._call_llm(prompt, temperature=0.3)
+        result = _safe_json_parse(raw)
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
         return result
 
@@ -165,13 +184,8 @@ class AIService:
             return cached
 
         prompt = self.template_manager.render("prompt_evaluation", user_input=sanitized)
-        response = self.client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=settings.OPENAI_MAX_TOKENS,
-        )
-        result = _safe_json_parse(response.choices[0].message.content)
+        raw = self._call_llm(prompt, temperature=0.2)
+        result = _safe_json_parse(raw)
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
         return result
 
@@ -205,13 +219,8 @@ class AIService:
             return cached
 
         prompt = self.template_manager.render("rlhf_generation", user_input=sanitized)
-        response = self.client.chat.completions.create(
-            model=settings.OPENAI_MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.4,
-            max_tokens=settings.OPENAI_MAX_TOKENS,
-        )
-        result = _safe_json_parse(response.choices[0].message.content)
+        raw = self._call_llm(prompt, temperature=0.4)
+        result = _safe_json_parse(raw)
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
         return result
 

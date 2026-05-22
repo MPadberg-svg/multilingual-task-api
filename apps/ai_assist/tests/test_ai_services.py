@@ -80,7 +80,7 @@ class TestSuggestTaskTranslations(TestCase):
     """Validate the task translation endpoint logic."""
 
     @override_settings(OPENAI_API_KEY="test-key")
-    @patch("apps.ai_assist.services.OpenAI")
+    @patch("openai.OpenAI")
     def test_en_es_fr_structure(self, mock_openai_cls):
         """Response must contain ``en``, ``es``, ``fr`` with title/description."""
         mock_client = Mock()
@@ -102,16 +102,18 @@ class TestSuggestTaskTranslations(TestCase):
         )
 
         service = AIService()
-        result = service.suggest_task_translations("test")
+        result = service.suggest_task_translations("user-1", "en", "test")
 
         assert "en" in result and "es" in result and "fr" in result
         assert "title" in result["en"] and "description" in result["en"]
 
     @override_settings(OPENAI_API_KEY="test-key")
-    @patch("apps.ai_assist.services.OpenAI")
-    def test_caching_deduplication(self, mock_openai_cls):
+    @patch("apps.ai_assist.services.cache")  # FIXED: patch cache to verify deduplication
+    @patch("openai.OpenAI")
+    def test_caching_deduplication(self, mock_openai_cls, mock_cache):
         """Identical inputs must hit cache and call OpenAI only once."""
         mock_client = Mock()
+        # FIXED: Return the SAME mock client instance so call_count accumulates
         mock_openai_cls.return_value = mock_client
         mock_client.chat.completions.create.return_value = Mock(
             choices=[
@@ -129,12 +131,20 @@ class TestSuggestTaskTranslations(TestCase):
             ]
         )
 
+        # First call: cache miss → calls OpenAI
+        mock_cache.get.return_value = None
         service = AIService()
-        r1 = service.suggest_task_translations("same")
-        r2 = service.suggest_task_translations("same")
+        r1 = service.suggest_task_translations("user-1", "en", "same")
 
+        # Second call: cache hit → returns cached value, no OpenAI call
+        mock_cache.get.return_value = r1
+        r2 = service.suggest_task_translations("user-1", "en", "same")
+
+        # OpenAI should only be called ONCE
         assert mock_client.chat.completions.create.call_count == 1
         assert r1 == r2
+        # Cache.set should be called once with the result
+        mock_cache.set.assert_called_once()
 
 
 # =============================================================================
@@ -145,7 +155,7 @@ class TestEvaluatePromptQuality(TestCase):
     """Validate the prompt quality evaluation logic."""
 
     @override_settings(OPENAI_API_KEY="test-key")
-    @patch("apps.ai_assist.services.OpenAI")
+    @patch("openai.OpenAI")
     def test_score_range_and_type(self, mock_openai_cls):
         """Score must be an integer in [0, 100]; improvements list; analysis str."""
         mock_client = Mock()
@@ -167,7 +177,7 @@ class TestEvaluatePromptQuality(TestCase):
         )
 
         service = AIService()
-        result = service.evaluate_prompt_quality("test prompt")
+        result = service.evaluate_prompt_quality("user-1", "en", "test prompt")
 
         assert isinstance(result["score"], int)
         assert 0 <= result["score"] <= 100
@@ -183,7 +193,7 @@ class TestGenerateRlhfTestCases(TestCase):
     """Validate the RLHF test case generation logic."""
 
     @override_settings(OPENAI_API_KEY="test-key")
-    @patch("apps.ai_assist.services.OpenAI")
+    @patch("openai.OpenAI")
     def test_jsonl_structure(self, mock_openai_cls):
         """Response must contain instruction, input, output, metadata with edge_cases."""
         mock_client = Mock()
@@ -210,7 +220,7 @@ class TestGenerateRlhfTestCases(TestCase):
         )
 
         service = AIService()
-        result = service.generate_rlhf_test_cases("def add(a,b): return a+b")
+        result = service.generate_rlhf_test_cases("user-1", "en", "def add(a,b): return a+b")
 
         assert "instruction" in result
         assert "input" in result

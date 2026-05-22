@@ -24,8 +24,7 @@ class TestTaskAPI(APITestCase):
     def setUp(self) -> None:
         """Set up the test user and authenticated API client."""
         self.user = User.objects.create_user(
-            username="testuser",
-            email="test@example.com",
+            email="test@example.com",     # ← FIXED: removed invalid `username=`
             password="testpass123",
         )
         self.client = APIClient()

@@ -264,21 +264,31 @@ CHANNEL_LAYERS: dict[str, Any] = {
 # Logging
 # =============================================================================
 LOG_LEVEL: str = config("LOG_LEVEL", default="INFO")
+_USE_JSON_LOGS: bool = config("JSON_LOGS", default=False, cast=bool)
 
 LOGGING: dict[str, Any] = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
+        "json": {
+            "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+            "format": "%(asctime)s %(name)s %(levelname)s %(message)s",
+            "datefmt": "%Y-%m-%dT%H:%M:%SZ",
+        },
         "verbose": {
-            "format": "{levelname} {asctime} {module} {message}",
+            "format": "[{asctime}] [{levelname}] [{name}] {message}",
             "style": "{",
         },
     },
     "handlers": {
         "console": {
             "class": "logging.StreamHandler",
-            "formatter": "verbose",
+            "formatter": "json" if _USE_JSON_LOGS else "verbose",
         },
+    },
+    "root": {
+        "handlers": ["console"],
+        "level": LOG_LEVEL,
     },
     "loggers": {
         "apps": {
@@ -288,12 +298,17 @@ LOGGING: dict[str, Any] = {
         },
         "django": {
             "handlers": ["console"],
-            "level": "INFO",
+            "level": "WARNING",
             "propagate": False,
         },
         "django.server": {
             "handlers": ["console"],
             "level": "WARNING",
+            "propagate": False,
+        },
+        "celery": {
+            "handlers": ["console"],
+            "level": "INFO",
             "propagate": False,
         },
     },

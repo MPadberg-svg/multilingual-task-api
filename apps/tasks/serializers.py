@@ -20,6 +20,8 @@ class TaskSerializer(serializers.ModelSerializer):
     """
 
     translations = serializers.SerializerMethodField()
+    title = serializers.SerializerMethodField()
+    description = serializers.SerializerMethodField()
     language = serializers.SerializerMethodField()
     status_display = serializers.CharField(
         source="get_status_display",
@@ -30,6 +32,8 @@ class TaskSerializer(serializers.ModelSerializer):
         model = Task
         fields = [
             "id",
+            "title",
+            "description",
             "translations",
             "language",
             "status",
@@ -39,6 +43,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "updated_at",
             "user",
         ]
+        read_only_fields = ["user"]
 
     def get_language(self, obj: Task) -> str:
         """Return the resolved language for the current request."""
@@ -46,6 +51,18 @@ class TaskSerializer(serializers.ModelSerializer):
         if request and hasattr(request, "language"):
             return request.language
         return "en"
+
+    def get_title(self, obj: Task) -> str:
+        """Return title in the resolved request language."""
+        request = self.context.get("request")
+        lang = getattr(request, "language", "en") if request else "en"
+        return obj.safe_translation_getter("title", language_code=lang, any_language=True) or ""
+
+    def get_description(self, obj: Task) -> str:
+        """Return description in the resolved request language."""
+        request = self.context.get("request")
+        lang = getattr(request, "language", "en") if request else "en"
+        return obj.safe_translation_getter("description", language_code=lang, any_language=True) or ""
 
     def get_translations(self, obj: Task) -> dict:
         """Return all available translations as a nested dict."""
@@ -58,16 +75,16 @@ class TaskSerializer(serializers.ModelSerializer):
         return result
 
     def create(self, validated_data: dict) -> Task:
-        """Create a new Task with translations."""
+        """Create a new Task with all translations."""
         translations_data = validated_data.pop("translations", {})
-        current_lang = self.get_language(None)
 
         task = Task.objects.create(**validated_data)
 
-        if translations_data and current_lang in translations_data:
-            task.set_current_language(current_lang)
-            task.title = translations_data[current_lang].get("title", "")
-            task.description = translations_data[current_lang].get("description", "")
+        # Save ALL translations, not just current language
+        for lang_code, trans_data in translations_data.items():
+            task.set_current_language(lang_code)
+            task.title = trans_data.get("title", "")
+            task.description = trans_data.get("description", "")
             task.save()
 
         return task
@@ -75,17 +92,17 @@ class TaskSerializer(serializers.ModelSerializer):
     def update(self, instance: Task, validated_data: dict) -> Task:
         """Update an existing Task and its translations."""
         translations_data = validated_data.pop("translations", {})
-        current_lang = self.get_language(None)
 
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
-        if translations_data and current_lang in translations_data:
-            instance.set_current_language(current_lang)
-            instance.title = translations_data[current_lang].get(
+        # Update ALL provided translations
+        for lang_code, trans_data in translations_data.items():
+            instance.set_current_language(lang_code)
+            instance.title = trans_data.get(
                 "title", instance.safe_translation_getter("title", any_language=True) or ""
             )
-            instance.description = translations_data[current_lang].get(
+            instance.description = trans_data.get(
                 "description", instance.safe_translation_getter("description", any_language=True) or ""
             )
 

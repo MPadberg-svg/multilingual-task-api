@@ -1,4 +1,4 @@
-"""Core API views for health checks and metrics."""
+"""Core API views for health checks, readiness, and metrics."""
 
 from __future__ import annotations
 
@@ -109,6 +109,55 @@ class HealthCheckView(APIView):
             }
         except OpenAIError as exc:
             return {"status": "down", "error": str(exc)}
+
+
+class ReadinessView(APIView):
+    """
+    Kubernetes/ECS readiness probe.
+    Returns 200 only when database AND Redis are reachable.
+    ALB/ECS will stop routing traffic if this returns 503.
+    """
+
+    permission_classes = [AllowAny]
+
+    def get(self, request, *args, **kwargs) -> Response:
+        checks = {}
+        is_ready = True
+
+        # Database check
+        start = time.monotonic()
+        try:
+            connection.ensure_connection()
+            with connection.cursor() as cursor:
+                cursor.execute("SELECT 1")
+            checks["database"] = {
+                "status": "ok",
+                "latency_ms": round((time.monotonic() - start) * 1000, 2),
+            }
+        except (OperationalError, DatabaseError) as e:
+            checks["database"] = {"status": "error", "detail": str(e)}
+            is_ready = False
+
+        # Redis check
+        start = time.monotonic()
+        try:
+            cache.set("readiness_ping", "pong", timeout=5)
+            val = cache.get("readiness_ping")
+            if val != "pong":
+                raise ValueError("Cache read/write mismatch")
+            checks["cache"] = {
+                "status": "ok",
+                "latency_ms": round((time.monotonic() - start) * 1000, 2),
+            }
+        except Exception as e:
+            checks["cache"] = {"status": "error", "detail": str(e)}
+            is_ready = False
+
+        http_status = 200 if is_ready else 503
+        return Response(
+            {"status": "ready" if is_ready else "not_ready", "checks": checks},
+            status=http_status,
+        )
 
 
 class MetricsView(APIView):

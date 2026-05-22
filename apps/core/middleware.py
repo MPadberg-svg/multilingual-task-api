@@ -22,7 +22,7 @@ class LanguageResolutionMiddleware(MiddlewareMixin):
     """Resolve request language from query param, header, or default."""
 
     def process_request(self, request: HttpRequest) -> None:
-        """Set ``request.lang`` based on priority chain.
+        """Set ``request.lang`` and ``request.language`` based on priority chain.
 
         Priority:
             1. Query param ``?lang=``
@@ -35,6 +35,7 @@ class LanguageResolutionMiddleware(MiddlewareMixin):
         if not lang or len(lang) > 10:
             lang = "en"
         request.lang = lang.lower()
+        request.language = lang.lower()  # FIXED: also set request.language for serializer/views
 
 
 class CorrelationIdMiddleware(MiddlewareMixin):

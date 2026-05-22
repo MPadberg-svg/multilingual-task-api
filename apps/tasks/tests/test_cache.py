@@ -7,7 +7,6 @@ isolation per language, invalidation on mutations, and TTL compliance.
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.urls import reverse
-from django_redis import get_redis_connection
 from rest_framework.test import APIClient, APITestCase
 
 from apps.tasks.models import Task
@@ -26,7 +25,7 @@ class TestTaskCache(APITestCase):
     def setUp(self) -> None:
         """Set up the test user, authenticated client, and clear cache."""
         self.user = User.objects.create_user(
-            username="cacheuser",
+            email="cacheuser@example.com",
             password="testpass123",
         )
         self.client = APIClient()
@@ -56,7 +55,13 @@ class TestTaskCache(APITestCase):
 
     def test_list_endpoint_cache_isolation_per_language(self) -> None:
         """List caches are stored separately per language code."""
-        Task.objects.create(user=self.user, status="pending")
+        task = Task.objects.create(user=self.user, status="pending")
+        task.set_current_language("en")
+        task.title = "English Title"
+        task.save()
+        task.set_current_language("es")
+        task.title = "Título Español"
+        task.save()
 
         self.client.get(reverse("task-list"), HTTP_ACCEPT_LANGUAGE="en")
         self.client.get(reverse("task-list"), HTTP_ACCEPT_LANGUAGE="es")
@@ -66,6 +71,7 @@ class TestTaskCache(APITestCase):
 
         self.assertIsNotNone(cache.get(en_key))
         self.assertIsNotNone(cache.get(es_key))
+        # Content should differ because translations are different
         self.assertNotEqual(cache.get(en_key), cache.get(es_key))
 
     def test_cache_invalidation_on_update(self) -> None:
@@ -114,8 +120,8 @@ class TestTaskCache(APITestCase):
         self.client.get(reverse("task-list"))
 
         cache_key = f"mltask:task_list:{self.user.id}:en:"
-        redis = get_redis_connection("default")
-        ttl = redis.ttl(cache_key)
+        self.assertIsNotNone(cache.get(cache_key))
 
+        ttl = cache.ttl(cache_key)
         self.assertLessEqual(ttl, 300)
         self.assertGreater(ttl, 0)

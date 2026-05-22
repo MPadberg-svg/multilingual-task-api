@@ -22,6 +22,15 @@ from apps.tasks.models import Task
 
 
 @strawberry.type
+class TaskTranslationType:
+    """A single language translation for a Task."""
+
+    language_code: str
+    title: str
+    description: str
+
+
+@strawberry.type
 class TaskType:
     """GraphQL representation of a multilingual Task."""
 
@@ -33,19 +42,20 @@ class TaskType:
     @strawberry.field
     def title(self, info: Info) -> str:
         """Resolve title in the request language."""
-        request = info.context.get("request")
-        lang = getattr(request, "language", "en") if request else "en"
+        # FIXED: info.context IS the HttpRequest, not a dict
+        request = info.context
+        lang = getattr(request, "language", "en")
         return self.safe_translation_getter("title", language_code=lang, any_language=True) or ""
 
     @strawberry.field
     def description(self, info: Info) -> str:
         """Resolve description in the request language."""
-        request = info.context.get("request")
-        lang = getattr(request, "language", "en") if request else "en"
+        request = info.context
+        lang = getattr(request, "language", "en")
         return self.safe_translation_getter("description", language_code=lang, any_language=True) or ""
 
     @strawberry.field
-    def translations(self) -> List["TaskTranslationType"]:
+    def translations(self) -> List[TaskTranslationType]:
         """Return all translations."""
         return [
             TaskTranslationType(
@@ -53,17 +63,8 @@ class TaskType:
                 title=t.title,
                 description=t.description,
             )
-            for t in self.translations.all()
+            for t in self.get_translations()
         ]
-
-
-@strawberry.type
-class TaskTranslationType:
-    """A single language translation for a Task."""
-
-    language_code: str
-    title: str
-    description: str
 
 
 @strawberry.type
@@ -95,8 +96,8 @@ class Query:
     @strawberry.field
     def tasks(self, info: Info, organization_id: Optional[UUID] = None) -> List[TaskType]:
         """List tasks scoped to the authenticated user's organizations."""
-        request = info.context.get("request")
-        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+        request = info.context  # FIXED: HttpRequest directly
+        if not request.user.is_authenticated:
             return []
 
         qs = Task.objects.filter(
@@ -112,8 +113,8 @@ class Query:
     @strawberry.field
     def task(self, info: Info, id: UUID) -> Optional[TaskType]:
         """Retrieve a single task by ID, scoped to user's organizations."""
-        request = info.context.get("request")
-        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+        request = info.context
+        if not request.user.is_authenticated:
             return None
 
         try:
@@ -128,8 +129,8 @@ class Query:
     @strawberry.field
     def organizations(self, info: Info) -> List[OrganizationType]:
         """List organizations the user is a member of."""
-        request = info.context.get("request")
-        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+        request = info.context
+        if not request.user.is_authenticated:
             return []
 
         return list(
@@ -142,8 +143,8 @@ class Query:
     @strawberry.field
     def organization(self, info: Info, id: UUID) -> Optional[OrganizationType]:
         """Retrieve a single organization by ID if user is a member."""
-        request = info.context.get("request")
-        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+        request = info.context
+        if not request.user.is_authenticated:
             return None
 
         try:
@@ -163,8 +164,8 @@ class Mutation:
     @strawberry.mutation
     def create_task(self, info: Info, title: str, description: str, status: str = "pending") -> Optional[TaskType]:
         """Create a new task for the authenticated user."""
-        request = info.context.get("request")
-        if not request or not hasattr(request, "user") or not request.user.is_authenticated:
+        request = info.context
+        if not request.user.is_authenticated:
             return None
 
         user = request.user

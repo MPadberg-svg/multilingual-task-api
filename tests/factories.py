@@ -45,7 +45,8 @@ class TaskFactory(factory.django.DjangoModelFactory):
     class Meta:
         model = Task
 
-    status = factory.Iterator(["draft", "pending", "completed", "archived"])
+    # FIXED: "draft" is NOT a valid status choice — replaced with "in_progress"
+    status = factory.Iterator(["pending", "in_progress", "completed", "archived"])
     user = factory.SubFactory(UserFactory)
 
     @factory.post_generation
