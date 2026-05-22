@@ -45,6 +45,16 @@ class EventPublisher:
         """
         return f"mltask:events:{org_id}:{event_type}"
 
+    def _safe_publish(self, channel: str, message: str) -> None:
+        """Publish to Redis with graceful error handling.
+
+        Logs a warning if Redis is unavailable instead of crashing.
+        """
+        try:
+            self.redis.publish(channel, message)
+        except Exception:
+            logger.warning("Failed to publish to Redis channel %s", channel, exc_info=True)
+
     def publish_task_event(
         self,
         org_id: str,
@@ -66,7 +76,7 @@ class EventPublisher:
                 "timestamp": timezone.now().isoformat(),
             }
         )
-        self.redis.publish(self._get_channel(org_id, "tasks"), message)
+        self._safe_publish(self._get_channel(org_id, "tasks"), message)
 
     def publish_ai_event(
         self,
@@ -89,7 +99,7 @@ class EventPublisher:
                 "timestamp": timezone.now().isoformat(),
             }
         )
-        self.redis.publish(self._get_channel(org_id, "ai"), message)
+        self._safe_publish(self._get_channel(org_id, "ai"), message)
 
     def publish_audit_event(
         self,
@@ -112,7 +122,7 @@ class EventPublisher:
                 "timestamp": timezone.now().isoformat(),
             }
         )
-        self.redis.publish(self._get_channel(org_id, "audit"), message)
+        self._safe_publish(self._get_channel(org_id, "audit"), message)
         self._persist_audit(org_id, action, audit_data)
 
     def _persist_audit(self, org_id: str, action: str, audit_data: dict) -> None:

@@ -79,7 +79,7 @@ def optimized_task_queryset():
             "created_at",
             "updated_at",
             "user__id",
-            "user__username",
+            "user__email",
         )
     )
 
