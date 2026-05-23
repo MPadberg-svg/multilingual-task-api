@@ -5,12 +5,12 @@ Provides:
       joins organization-scoped and user-scoped channel groups.
 """
 
-import json
 import logging
+
+from django.contrib.auth import get_user_model
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
-from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.tokens import AccessToken
 
 User = get_user_model()
@@ -54,16 +54,10 @@ class TaskUpdateConsumer(AsyncJsonWebsocketConsumer):
             payload = AccessToken(token)
             user_id = payload["user_id"]
             self.user = await database_sync_to_async(User.objects.get)(id=user_id)
-            self.organization_id = (
-                self.scope["url_route"]["kwargs"].get("org_id", "global")
-            )
+            self.organization_id = self.scope["url_route"]["kwargs"].get("org_id", "global")
 
-            await self.channel_layer.group_add(
-                f"org_{self.organization_id}", self.channel_name
-            )
-            await self.channel_layer.group_add(
-                f"user_{user_id}", self.channel_name
-            )
+            await self.channel_layer.group_add(f"org_{self.organization_id}", self.channel_name)
+            await self.channel_layer.group_add(f"user_{user_id}", self.channel_name)
             await self.accept()
             await self.send_json(
                 {
@@ -79,13 +73,9 @@ class TaskUpdateConsumer(AsyncJsonWebsocketConsumer):
     async def disconnect(self, close_code):
         """Leave all joined channel groups on disconnect."""
         if self.user:
-            await self.channel_layer.group_discard(
-                f"user_{self.user.id}", self.channel_name
-            )
+            await self.channel_layer.group_discard(f"user_{self.user.id}", self.channel_name)
         if self.organization_id:
-            await self.channel_layer.group_discard(
-                f"org_{self.organization_id}", self.channel_name
-            )
+            await self.channel_layer.group_discard(f"org_{self.organization_id}", self.channel_name)
 
     async def receive_json(self, content, **kwargs):
         """Handle incoming client messages.
@@ -101,9 +91,7 @@ class TaskUpdateConsumer(AsyncJsonWebsocketConsumer):
         elif msg_type == "subscribe_task":
             task_id = content.get("task_id")
             if task_id:
-                await self.channel_layer.group_add(
-                    f"task_{task_id}", self.channel_name
-                )
+                await self.channel_layer.group_add(f"task_{task_id}", self.channel_name)
                 await self.send_json({"type": "subscribed", "task_id": task_id})
 
     async def task_update(self, event):

@@ -11,8 +11,9 @@ import logging
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
 from django.db import connection
+
+import pytest
 
 from apps.core.performance import (
     QueryProfiler,
@@ -20,6 +21,8 @@ from apps.core.performance import (
     bulk_create_translations,
     optimized_task_queryset,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TestQueryProfiler:
@@ -34,13 +37,13 @@ class TestQueryProfiler:
 
                 with QueryProfiler(threshold_ms=5000.0, max_queries=1):
                     from django.contrib.auth import get_user_model
+
                     User = get_user_model()
                     list(User.objects.all())
                     list(User.objects.all())
 
             mock_warning.assert_called()
-            n1_calls = [call for call in mock_warning.call_args_list 
-                       if "N+1 detected" in str(call)]
+            n1_calls = [call for call in mock_warning.call_args_list if "N+1 detected" in str(call)]
             assert n1_calls, f"Expected 'N+1 detected' in calls, got: {mock_warning.call_args_list}"
 
     def test_profiler_logs_slow_query_warning(self):
@@ -53,9 +56,12 @@ class TestQueryProfiler:
                     time.sleep(0.01)
 
             mock_warning.assert_called()
-            slow_calls = [call for call in mock_warning.call_args_list 
-                         if "Slow query detected" in str(call)]
-            assert slow_calls, f"Expected 'Slow query detected' in calls, got: {mock_warning.call_args_list}"
+            slow_calls = [
+                call for call in mock_warning.call_args_list if "Slow query detected" in str(call)
+            ]
+            assert (
+                slow_calls
+            ), f"Expected 'Slow query detected' in calls, got: {mock_warning.call_args_list}"
 
     def test_profiler_yields_control(self):
         """Profiler context manager must execute the wrapped code."""
@@ -77,7 +83,7 @@ class TestOptimizedTaskQueryset:
 
         # Check prefetch_related via the queryset's internal attribute
         # This works on all Django queryset subclasses including TranslatableQuerySet
-        prefetch_lookups = getattr(qs, '_prefetch_related_lookups', ())
+        prefetch_lookups = getattr(qs, "_prefetch_related_lookups", ())
         assert prefetch_lookups, "Expected prefetch_related to be set"
         lookup_names = [str(lookup) for lookup in prefetch_lookups]
         assert any("translations" in name for name in lookup_names)
@@ -103,8 +109,10 @@ class TestBatchUpdateTasks:
     @pytest.mark.django_db
     def test_batch_update_tasks_returns_count(self):
         """Must return the number of rows updated."""
-        from apps.tasks.models import Task
         from django.contrib.auth import get_user_model
+
+        from apps.tasks.models import Task
+
         User = get_user_model()
 
         # Patch the signal handler to avoid real Redis connection
@@ -130,8 +138,10 @@ class TestBatchUpdateTasks:
     @pytest.mark.django_db
     def test_batch_update_tasks_updates_timestamp(self):
         """Must update the updated_at timestamp."""
-        from apps.tasks.models import Task
         from django.contrib.auth import get_user_model
+
+        from apps.tasks.models import Task
+
         User = get_user_model()
 
         with patch("apps.tasks.signals.EventPublisher") as mock_publisher_cls:
@@ -156,8 +166,10 @@ class TestBulkCreateTranslations:
     @pytest.mark.django_db
     def test_bulk_create_translations_returns_list(self):
         """Must return a list of created translations."""
-        from apps.tasks.models import Task
         from django.contrib.auth import get_user_model
+
+        from apps.tasks.models import Task
+
         User = get_user_model()
 
         with patch("apps.tasks.signals.EventPublisher") as mock_publisher_cls:
@@ -190,8 +202,10 @@ class TestBulkCreateTranslations:
     @pytest.mark.django_db
     def test_bulk_create_translations_sets_correct_fields(self):
         """Created translations must have correct language and content."""
-        from apps.tasks.models import Task
         from django.contrib.auth import get_user_model
+
+        from apps.tasks.models import Task
+
         User = get_user_model()
 
         with patch("apps.tasks.signals.EventPublisher") as mock_publisher_cls:

@@ -102,8 +102,7 @@ class AIAssistUser(HttpUser):
             "/api/v1/ai/suggest-task/",
             json={
                 "description": (
-                    "Generate a task about machine learning data "
-                    "annotation with edge cases"
+                    "Generate a task about machine learning data " "annotation with edge cases"
                 )
             },
             name="/api/v1/ai/suggest-task/",
@@ -114,8 +113,6 @@ class AIAssistUser(HttpUser):
         """Request a prompt-quality evaluation."""
         self.client.post(
             "/api/v1/ai/evaluate-quality/",
-            json={
-                "prompt_text": "Explain quantum computing to a 5-year-old"
-            },
+            json={"prompt_text": "Explain quantum computing to a 5-year-old"},
             name="/api/v1/ai/evaluate-quality/",
         )

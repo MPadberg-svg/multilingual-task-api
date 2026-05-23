@@ -4,11 +4,12 @@ import contextlib
 import logging
 from unittest.mock import MagicMock
 
-import pytest
 from django.db import connection
 from django.http import HttpResponse
 from django.test import RequestFactory
 from django.test.utils import CaptureQueriesContext
+
+import pytest
 
 from apps.analytics.middleware import RequestTimingMiddleware
 
@@ -40,9 +41,9 @@ class TestRequestTimingMiddleware:
         request = self.factory.get("/api/v1/tasks/")
         with CaptureQueriesContext(connection) as ctx:
             self.middleware(request)
-        assert len(ctx.captured_queries) == 0, (
-            f"Middleware made {len(ctx.captured_queries)} DB queries — expected 0"
-        )
+        assert (
+            len(ctx.captured_queries) == 0
+        ), f"Middleware made {len(ctx.captured_queries)} DB queries — expected 0"
 
     def test_middleware_logs_request_timing(self):
         """Middleware must emit a structured 'request_timing' log record."""
@@ -54,9 +55,9 @@ class TestRequestTimingMiddleware:
             self.middleware(request)
 
         timing_logs = [r for r in records if r.message == "request_timing"]
-        assert len(timing_logs) == 1, (
-            f"Expected exactly 1 'request_timing' log, got {len(timing_logs)}"
-        )
+        assert (
+            len(timing_logs) == 1
+        ), f"Expected exactly 1 'request_timing' log, got {len(timing_logs)}"
         log = timing_logs[0]
         assert hasattr(log, "method") and log.method == "GET"
         assert hasattr(log, "path") and log.path == "/api/v1/tasks/"

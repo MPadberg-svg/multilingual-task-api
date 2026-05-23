@@ -6,8 +6,6 @@ short-lived DB connections, and cache exception tolerance.
 
 from __future__ import annotations
 
-from typing import Any
-
 from .base import *  # noqa: F401,F403
 
 # =============================================================================

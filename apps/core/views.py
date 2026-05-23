@@ -5,11 +5,11 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from django.conf import settings
 from django.core.cache import cache
 from django.db import connection
 from django.db.utils import DatabaseError, OperationalError
 from django.utils import timezone
+
 from django_redis import get_redis_connection
 from redis.exceptions import RedisError
 from rest_framework.permissions import AllowAny
@@ -60,9 +60,9 @@ class HealthCheckView(APIView):
             "db": self._check_db(),
             "redis": self._check_redis(),
         }
-        overall_status = "ok" if all(
-            result["status"] == "ok" for result in checks.values()
-        ) else "degraded"
+        overall_status = (
+            "ok" if all(result["status"] == "ok" for result in checks.values()) else "degraded"
+        )
         return Response(
             {
                 "status": overall_status,

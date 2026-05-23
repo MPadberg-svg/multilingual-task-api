@@ -6,6 +6,7 @@ soft-delete, restore functionality, and security/edge cases.
 
 from django.contrib.auth import get_user_model
 from django.urls import reverse
+
 from rest_framework.test import APIClient, APITestCase
 
 from apps.tasks.models import Task
@@ -24,7 +25,7 @@ class TestTaskAPI(APITestCase):
     def setUp(self) -> None:
         """Set up the test user and authenticated API client."""
         self.user = User.objects.create_user(
-            email="test@example.com",     # ← FIXED: removed invalid `username=`
+            email="test@example.com",  # ← FIXED: removed invalid `username=`
             password="testpass123",
         )
         self.client = APIClient()

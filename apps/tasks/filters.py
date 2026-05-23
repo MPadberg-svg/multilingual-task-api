@@ -7,6 +7,7 @@ date-range filtering on creation time.
 
 from django.conf import settings
 from django.db.models import Q
+
 from django_filters import rest_framework as filters
 
 from apps.tasks.models import Task
@@ -88,15 +89,12 @@ class TaskFilter(filters.FilterSet):
         languages = getattr(settings, "LANGUAGES", [("en", "English")])
 
         for lang_code, _lang_name in languages:
-            q_objects |= (
-                Q(
-                    translations__language_code=lang_code,
-                    translations__title__icontains=value,
-                )
-                | Q(
-                    translations__language_code=lang_code,
-                    translations__description__icontains=value,
-                )
+            q_objects |= Q(
+                translations__language_code=lang_code,
+                translations__title__icontains=value,
+            ) | Q(
+                translations__language_code=lang_code,
+                translations__description__icontains=value,
             )
 
         return queryset.filter(q_objects).distinct()

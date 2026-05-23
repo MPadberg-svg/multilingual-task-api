@@ -6,9 +6,7 @@ JSON-only API responses, strict cache failure policy, and structured logging.
 
 from __future__ import annotations
 
-from typing import Any
-
-from decouple import config, Csv
+from decouple import Csv, config
 
 from .base import *  # noqa: F401,F403
 

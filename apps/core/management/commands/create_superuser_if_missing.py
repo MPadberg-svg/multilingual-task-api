@@ -32,12 +32,8 @@ class Command(BaseCommand):
         password = options["password"]
 
         if User.objects.filter(is_superuser=True).exists():
-            self.stdout.write(
-                self.style.WARNING("Superuser already exists. Skipping.")
-            )
+            self.stdout.write(self.style.WARNING("Superuser already exists. Skipping."))
             return
 
         User.objects.create_superuser(email=email, password=password)
-        self.stdout.write(
-            self.style.SUCCESS(f"Superuser created: {email}")
-        )
+        self.stdout.write(self.style.SUCCESS(f"Superuser created: {email}"))

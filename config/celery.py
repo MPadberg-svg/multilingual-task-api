@@ -7,7 +7,6 @@ and binds to Django settings via the CELERY_ namespace.
 from __future__ import annotations
 
 import os
-from typing import Any
 
 from celery import Celery
 
@@ -26,11 +25,13 @@ app.conf.task_routes: dict[str, dict[str, str]] = {
     "apps.ai_assist.services.*": {"queue": "ai"},
 }
 
+
 # Auto-discover tasks after Django apps are fully loaded.
 # This is called explicitly after django.setup() to ensure all apps are ready.
 def discover_tasks():
     """Discover tasks from all installed Django apps."""
     from django.conf import settings
+
     app.autodiscover_tasks(lambda: settings.INSTALLED_APPS)
 
 

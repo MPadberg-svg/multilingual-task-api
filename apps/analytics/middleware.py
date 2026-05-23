@@ -12,7 +12,6 @@ from typing import Callable
 
 from django.http import HttpRequest, HttpResponse
 
-
 logger: logging.Logger = logging.getLogger(__name__)
 
 

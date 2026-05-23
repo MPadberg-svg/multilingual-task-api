@@ -8,8 +8,9 @@ Covers:
 """
 
 import json
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from apps.core.events import EventPublisher
 
@@ -91,7 +92,6 @@ class TestEventPublisher:
     def test_publish_handles_redis_error_gracefully(self):
         """EventPublisher must not raise even if Redis is down."""
         from apps.core.events import EventPublisher
-        import logging
 
         failing_redis = MagicMock()
         failing_redis.publish.side_effect = ConnectionError("Redis connection refused")

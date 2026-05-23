@@ -10,8 +10,9 @@ Example:
     'Review the quarterly annotation metrics.'
 """
 
-import factory
 from django.contrib.auth import get_user_model
+
+import factory
 from faker import Faker
 
 from apps.tasks.models import Task

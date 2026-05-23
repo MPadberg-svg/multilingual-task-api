@@ -27,39 +27,39 @@ class InputValidator:
     """
 
     SQL_INJECTION_PATTERNS = [
-        r'\bDROP\b',
-        r'\bUNION\b',
-        r'\bSELECT\b',
-        r'\bINSERT\b',
-        r'\bDELETE\b',
-        r'\bUPDATE\b',
-        r'\bEXEC\b',
-        r'\bEXECUTE\b',
-        r'\bWAITFOR\b',
-        r'--\s*$',
-        r';--',
-        r'/\*.*?\*/',
-        r'\bxp_',
-        r'\bsp_',
+        r"\bDROP\b",
+        r"\bUNION\b",
+        r"\bSELECT\b",
+        r"\bINSERT\b",
+        r"\bDELETE\b",
+        r"\bUPDATE\b",
+        r"\bEXEC\b",
+        r"\bEXECUTE\b",
+        r"\bWAITFOR\b",
+        r"--\s*$",
+        r";--",
+        r"/\*.*?\*/",
+        r"\bxp_",
+        r"\bsp_",
     ]
 
     SCRIPT_PATTERNS = [
-        r'<script[^>]*>.*?',
-        r'javascript:',
-        r'\bon\w+\s*=',
-        r'\bonerror\s*=',
-        r'\bonload\s*=',
-        r'\beval\s*\(',
-        r'\bexpression\s*\(',
+        r"<script[^>]*>.*?",
+        r"javascript:",
+        r"\bon\w+\s*=",
+        r"\bonerror\s*=",
+        r"\bonload\s*=",
+        r"\beval\s*\(",
+        r"\bexpression\s*\(",
     ]
 
     DANGEROUS_CODE_PATTERNS = [
-        r'\beval\s*\(',
-        r'\bexec\s*\(',
-        r'\bos\.system\s*\(',
-        r'\bsubprocess\b',
-        r'\b__import__\b',
-        r'\bcompile\s*\(',
+        r"\beval\s*\(",
+        r"\bexec\s*\(",
+        r"\bos\.system\s*\(",
+        r"\bsubprocess\b",
+        r"\b__import__\b",
+        r"\bcompile\s*\(",
     ]
 
     @staticmethod
@@ -106,8 +106,13 @@ class InputValidator:
             raise ValueError(f"Input exceeds maximum length of {max_length}")
         # Remove null bytes and most control characters (keep tab, newline, space)
         cleaned = "".join(
-            ch for ch in value if ch == "\n" or ch == "\t" or (ch >= " " and ch <= "~")
-            or ch in "¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ"
+            ch
+            for ch in value
+            if ch == "\n"
+            or ch == "\t"
+            or (ch >= " " and ch <= "~")
+            or ch
+            in "¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ"
         )
         return cleaned.strip()
 

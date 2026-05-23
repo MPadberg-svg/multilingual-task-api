@@ -20,8 +20,12 @@ class CustomUserAdmin(BaseUserAdmin):
 
     model = CustomUser
     list_display = (
-        "email", "first_name", "last_name",
-        "is_staff", "is_active", "date_joined"
+        "email",
+        "first_name",
+        "last_name",
+        "is_staff",
+        "is_active",
+        "date_joined",
     )
     list_filter = ("is_staff", "is_active", "date_joined")
     search_fields = ("email", "first_name", "last_name")
@@ -31,28 +35,44 @@ class CustomUserAdmin(BaseUserAdmin):
     fieldsets = (
         (None, {"fields": ("id", "email", "password")}),
         ("Personal Info", {"fields": ("first_name", "last_name")}),
-        ("Permissions", {
-            "fields": (
-                "is_active", "is_staff", "is_superuser",
-                "groups", "user_permissions"
-            ),
-            "classes": ("collapse",),
-        }),
-        ("Important Dates", {
-            "fields": ("last_login", "date_joined", "last_login_ip"),
-            "classes": ("collapse",),
-        }),
+        (
+            "Permissions",
+            {
+                "fields": (
+                    "is_active",
+                    "is_staff",
+                    "is_superuser",
+                    "groups",
+                    "user_permissions",
+                ),
+                "classes": ("collapse",),
+            },
+        ),
+        (
+            "Important Dates",
+            {
+                "fields": ("last_login", "date_joined", "last_login_ip"),
+                "classes": ("collapse",),
+            },
+        ),
     )
 
     add_fieldsets = (
-        (None, {
-            "classes": ("wide",),
-            "fields": (
-                "email", "first_name", "last_name",
-                "password1", "password2",
-                "is_staff", "is_active"
-            ),
-        }),
+        (
+            None,
+            {
+                "classes": ("wide",),
+                "fields": (
+                    "email",
+                    "first_name",
+                    "last_name",
+                    "password1",
+                    "password2",
+                    "is_staff",
+                    "is_active",
+                ),
+            },
+        ),
     )
 
 
@@ -68,7 +88,8 @@ class OrganizationAdmin(admin.ModelAdmin):
 
     def member_count(self, obj):
         count = obj.members.count()
-        return format_html('<b>{}</b> members', count)
+        return format_html("<b>{}</b> members", count)
+
     member_count.short_description = "Members"
 
 
@@ -93,8 +114,10 @@ class OrganizationMemberAdmin(admin.ModelAdmin):
         return format_html(
             '<span style="background:{};color:white;padding:2px 8px;'
             'border-radius:12px;font-size:11px;font-weight:600">{}</span>',
-            color, obj.role.upper()
+            color,
+            obj.role.upper(),
         )
+
     role_badge.short_description = "Role"
 
 
@@ -105,21 +128,25 @@ class AuditLogAdmin(admin.ModelAdmin):
     Enforced as read-only to safeguard data immutability.
     """
 
-    list_display = (
-        "action", "resource_type", "user_email",
-        "ip_address", "created_at"
-    )
+    list_display = ("action", "resource_type", "user_email", "ip_address", "created_at")
     list_filter = ("action", "resource_type", "created_at")
     search_fields = ("user__email", "resource_type", "ip_address")
     readonly_fields = (
-        "id", "action", "resource_type", "user",
-        "ip_address", "user_agent", "metadata", "created_at"
+        "id",
+        "action",
+        "resource_type",
+        "user",
+        "ip_address",
+        "user_agent",
+        "metadata",
+        "created_at",
     )
     ordering = ("-created_at",)
     date_hierarchy = "created_at"
 
     def user_email(self, obj):
         return obj.user.email if obj.user else "—"
+
     user_email.short_description = "User"
 
     def has_add_permission(self, request):

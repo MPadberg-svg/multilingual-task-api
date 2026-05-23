@@ -13,4 +13,5 @@ class CoreConfig(AppConfig):
     def ready(self):
         """Trigger Celery task discovery when Django apps are fully loaded."""
         from config.celery import discover_tasks
+
         discover_tasks()

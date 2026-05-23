@@ -13,6 +13,7 @@ import json
 import logging
 
 from django.utils import timezone
+
 from django_redis import get_redis_connection
 
 logger = logging.getLogger(__name__)

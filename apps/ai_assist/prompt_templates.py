@@ -5,6 +5,7 @@ Provides:
     - ``PromptTemplateManager``: Renders prompts with variable substitution
       and version tracking.
 """
+
 from typing import Final
 
 # =============================================================================

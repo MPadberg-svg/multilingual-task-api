@@ -5,20 +5,19 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('core', '0002_initial_core_models'),
-        ('tasks', '0001_initial'),
+        ("core", "0002_initial_core_models"),
+        ("tasks", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.AlterModelOptions(
-            name='task',
-            options={'ordering': ['-created_at']},
+            name="task",
+            options={"ordering": ["-created_at"]},
         ),
         migrations.AddIndex(
-            model_name='task',
-            index=models.Index(fields=['-created_at'], name='tasks_task_created_5da2cb_idx'),
+            model_name="task",
+            index=models.Index(fields=["-created_at"], name="tasks_task_created_5da2cb_idx"),
         ),
     ]

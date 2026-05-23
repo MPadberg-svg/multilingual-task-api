@@ -12,9 +12,10 @@ Covers:
 import time
 from unittest.mock import MagicMock, patch
 
-import pytest
 from django.contrib.auth import get_user_model
-from rest_framework.test import APIClient, APIRequestFactory
+
+import pytest
+from rest_framework.test import APIRequestFactory
 
 from apps.core.throttling import AIAssistRateThrottle, BurstRateThrottle
 
@@ -61,8 +62,8 @@ class TestAIAssistRateThrottle:
         user.pk = "user-456"
         request.user = user
 
-        with patch.object(throttle.cache, 'get', return_value=[]):
-            with patch.object(throttle.cache, 'set'):
+        with patch.object(throttle.cache, "get", return_value=[]):
+            with patch.object(throttle.cache, "set"):
                 allowed = throttle.allow_request(request, None)
                 assert allowed is True
 
@@ -80,8 +81,8 @@ class TestAIAssistRateThrottle:
         now = time.time()
         fake_history = [now - i * 100 for i in range(20)]
 
-        with patch.object(throttle.cache, 'get', return_value=fake_history):
-            with patch.object(throttle.cache, 'set'):
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
                 allowed = throttle.allow_request(request, None)
                 assert allowed is False
 
@@ -99,9 +100,9 @@ class TestAIAssistRateThrottle:
         now = time.time()
         fake_history = [now - i * 100 for i in range(20)]
 
-        with patch.object(throttle.cache, 'get', return_value=fake_history):
-            with patch.object(throttle.cache, 'set'):
-                with patch.object(throttle, '_log_violation') as mock_log:
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
+                with patch.object(throttle, "_log_violation") as mock_log:
                     throttle.allow_request(request, None)
                     mock_log.assert_called_once()
 
@@ -146,8 +147,8 @@ class TestBurstRateThrottle:
         now = time.time()
         fake_history = [now - 10, now - 20, now - 30]
 
-        with patch.object(throttle.cache, 'get', return_value=fake_history):
-            with patch.object(throttle.cache, 'set'):
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
                 allowed = throttle.allow_request(request, None)
                 assert allowed is True
 
@@ -165,8 +166,8 @@ class TestBurstRateThrottle:
         now = time.time()
         fake_history = [now - 10, now - 20, now - 30, now - 40, now - 50]
 
-        with patch.object(throttle.cache, 'get', return_value=fake_history):
-            with patch.object(throttle.cache, 'set'):
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
                 allowed = throttle.allow_request(request, None)
                 assert allowed is False
 
@@ -184,8 +185,8 @@ class TestBurstRateThrottle:
         now = time.time()
         fake_history = [now - 120, now - 130, now - 140, now - 150, now - 160]
 
-        with patch.object(throttle.cache, 'get', return_value=fake_history):
-            with patch.object(throttle.cache, 'set'):
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
                 allowed = throttle.allow_request(request, None)
                 assert allowed is True
 
@@ -208,17 +209,14 @@ class TestThrottlingIntegration:
 
     def test_anon_request_blocked_by_throttle(self):
         """Anonymous API request must be throttled (403/429)."""
-        client = APIClient()
+        throttle = AIAssistRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
+        request.user = MagicMock()
+        request.user.is_authenticated = False
 
-        with patch.object(AIAssistRateThrottle, "get_cache_key", return_value=None):
-            throttle = AIAssistRateThrottle()
-            factory = APIRequestFactory()
-            request = factory.get("/api/v1/ai/suggest/")
-            request.user = MagicMock()
-            request.user.is_authenticated = False
-
-            cache_key = throttle.get_cache_key(request, None)
-            assert cache_key is None
+        cache_key = throttle.get_cache_key(request, None)
+        assert cache_key is None
 
     def test_auth_request_gets_user_cache_key(self):
         """Authenticated user must get a stable cache key."""

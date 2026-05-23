@@ -6,6 +6,7 @@ Usage:
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
+
 from faker import Faker
 
 from apps.tasks.models import Task
@@ -45,12 +46,12 @@ class Command(BaseCommand):
             **options: Parsed CLI options (users, tasks_per_user).
         """
         for u in range(options["users"]):
+            # FIXED: Removed username=, using email as primary identifier
             user = User.objects.create_user(
-                username=f"demo{u}",
                 email=f"demo{u}@example.com",
                 password="demo123",
             )
-            self.stdout.write(f"Created user: {user.username}")
+            self.stdout.write(f"Created user: {user.email}")
 
             for t in range(options["tasks_per_user"]):
                 task = Task.objects.create(user=user, status="pending")
@@ -72,7 +73,6 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                f'Created {options["users"]} users with '
-                f'{options["tasks_per_user"]} tasks each'
+                f'Created {options["users"]} users with ' f'{options["tasks_per_user"]} tasks each'
             )
         )

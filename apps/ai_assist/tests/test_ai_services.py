@@ -2,21 +2,23 @@
 
 All OpenAI API calls are mocked to avoid external network dependencies.
 Tests cover JSON response parsing, translation suggestion, prompt quality
-evaluation, and RLHF test case generation.
+evaluation, RLHF test case generation, security hardening, circuit breaker
+resilience, and rate limiting.
 """
 
 import json
 from unittest.mock import Mock, patch
 
-import pytest
 from django.test import TestCase, override_settings
 
-from apps.ai_assist.services import AIService
+import pytest
 
+from apps.ai_assist.services import AIService
 
 # =============================================================================
 # _parse_json_response
 # =============================================================================
+
 
 class TestParseJsonResponse(TestCase):
     """Validate the JSON sanitisation helper."""
@@ -42,9 +44,7 @@ class TestParseJsonResponse(TestCase):
     def test_markdown_fence_stripping(self):
         """Markdown fenced blocks should be stripped before parsing."""
         service = AIService()
-        result = service._parse_json_response(
-            "```json\n{\"key\": \"value\"}\n```"
-        )
+        result = service._parse_json_response('```json\n{"key": "value"}\n```')
         assert result == {"key": "value"}
 
     @override_settings(
@@ -75,6 +75,7 @@ class TestParseJsonResponse(TestCase):
 # =============================================================================
 # suggest_task_translations
 # =============================================================================
+
 
 class TestSuggestTaskTranslations(TestCase):
     """Validate the task translation endpoint logic."""
@@ -151,6 +152,7 @@ class TestSuggestTaskTranslations(TestCase):
 # evaluate_prompt_quality
 # =============================================================================
 
+
 class TestEvaluatePromptQuality(TestCase):
     """Validate the prompt quality evaluation logic."""
 
@@ -188,6 +190,7 @@ class TestEvaluatePromptQuality(TestCase):
 # =============================================================================
 # generate_rlhf_test_cases
 # =============================================================================
+
 
 class TestGenerateRlhfTestCases(TestCase):
     """Validate the RLHF test case generation logic."""
@@ -227,3 +230,180 @@ class TestGenerateRlhfTestCases(TestCase):
         assert "output" in result
         assert "metadata" in result
         assert "edge_cases" in result["metadata"]
+
+
+# =============================================================================
+# AI Security Tests — Input Validation
+# =============================================================================
+
+
+class TestAISecurity(TestCase):
+    """Validate that AIService blocks malicious input before it reaches the LLM."""
+
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_MODEL="gpt-4o-mini",
+        OPENAI_MAX_TOKENS=2000,
+        OPENAI_TEMPERATURE=0.7,
+    )
+    def test_sql_injection_is_blocked(self):
+        """AI service must reject SQL injection patterns with ValueError."""
+        service = AIService()
+        with self.assertRaises(ValueError) as ctx:
+            service.suggest_task_translations(
+                user_id="test-user",
+                lang="en",
+                user_input="'; DROP TABLE tasks; --",
+            )
+        self.assertIn("Input blocked", str(ctx.exception))
+
+    @override_settings(
+        OPENAI_API_KEY="test-key",
+        OPENAI_MODEL="gpt-4o-mini",
+        OPENAI_MAX_TOKENS=2000,
+        OPENAI_TEMPERATURE=0.7,
+    )
+    def test_xss_input_is_blocked(self):
+        """AI service must reject XSS patterns with ValueError."""
+        service = AIService()
+        with self.assertRaises(ValueError) as ctx:
+            service.suggest_task_translations(
+                user_id="test-user",
+                lang="en",
+                user_input="<script>document.cookie='stolen'</script>",
+            )
+        self.assertIn("Input blocked", str(ctx.exception))
+
+
+# =============================================================================
+# Circuit Breaker Tests
+# =============================================================================
+
+
+class TestCircuitBreaker(TestCase):
+    """Validate circuit breaker state transitions and resilience."""
+
+    def test_circuit_breaker_is_closed_initially(self):
+        """Circuit breaker must start in CLOSED state."""
+        from apps.ai_assist.circuit_breaker import CircuitBreaker, CircuitState
+
+        cb = CircuitBreaker(name="test", failure_threshold=5, recovery_timeout=60)
+        self.assertEqual(cb.state, CircuitState.CLOSED)
+        self.assertEqual(cb._failure_count, 0)
+
+    def test_circuit_breaker_opens_after_threshold_failures(self):
+        """Circuit must open after N consecutive failures."""
+        from apps.ai_assist.circuit_breaker import CircuitBreaker, CircuitOpenError, CircuitState
+
+        cb = CircuitBreaker(name="test", failure_threshold=3, recovery_timeout=60)
+
+        def bad_func():
+            raise ValueError("API down")
+
+        # Trigger 3 failures to reach threshold
+        for _ in range(3):
+            with self.assertRaises(ValueError):
+                cb.call(bad_func)
+
+        self.assertEqual(cb.state, CircuitState.OPEN)
+
+        # Next call must raise CircuitOpenError immediately
+        with self.assertRaises(CircuitOpenError):
+            cb.call(bad_func)
+
+    def test_circuit_breaker_half_open_after_timeout(self):
+        """Circuit must transition to HALF_OPEN after recovery_timeout."""
+        from apps.ai_assist.circuit_breaker import CircuitBreaker, CircuitState
+
+        cb = CircuitBreaker(name="test", failure_threshold=2, recovery_timeout=0)
+
+        def bad_func():
+            raise ValueError("API down")
+
+        # Open the circuit
+        for _ in range(2):
+            with self.assertRaises(ValueError):
+                cb.call(bad_func)
+
+        # With recovery_timeout=0, checking state triggers immediate transition
+        # to HALF_OPEN because (now - last_failure_time) >= 0 is always true
+        self.assertEqual(cb.state, CircuitState.HALF_OPEN)
+
+        # A successful call in HALF_OPEN should close the circuit
+        result = cb.call(lambda: "recovery")
+        self.assertEqual(result, "recovery")
+        self.assertEqual(cb.state, CircuitState.CLOSED)
+
+
+# =============================================================================
+# Rate Limiting Tests
+# =============================================================================
+
+
+@override_settings(
+    CACHES={
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+        }
+    }
+)
+class TestRateLimiting(TestCase):
+    """Validate that AI endpoints enforce rate limits."""
+
+    @patch("openai.OpenAI")
+    def test_ai_service_respects_rate_limit(self, mock_openai_cls):
+        """AI endpoint must throttle excessive requests."""
+        from django.contrib.auth import get_user_model
+        from django.core.cache import cache
+        from django.urls import reverse
+
+        from rest_framework.test import APIClient
+
+        User = get_user_model()
+        client = APIClient()
+
+        user = User.objects.create_user(
+            email="ratelimit@example.com",
+            password="testpass123",
+        )
+        client.force_authenticate(user=user)
+
+        # Mock OpenAI to return valid JSON quickly (no real API calls)
+        mock_client = Mock()
+        mock_openai_cls.return_value = mock_client
+        mock_client.chat.completions.create.return_value = Mock(
+            choices=[
+                Mock(
+                    message=Mock(
+                        content=json.dumps(
+                            {
+                                "en": {"title": "T", "description": "D"},
+                                "es": {"title": "T", "description": "D"},
+                                "fr": {"title": "T", "description": "D"},
+                            }
+                        )
+                    )
+                )
+            ]
+        )
+
+        # Clear any existing throttle cache for this user
+        cache.delete(f"mltask:throttle:ai_assist_burst:{user.pk}")
+        cache.delete(f"mltask:throttle:ai_assist:{user.pk}")
+
+        # Make requests up to the burst limit (5/min per views.py)
+        for i in range(5):
+            response = client.post(
+                reverse("suggest-task"),
+                {"description": f"Task {i}", "lang": "en"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        # The 6th request should be throttled (429)
+        response = client.post(
+            reverse("suggest-task"),
+            {"description": "Over the limit", "lang": "en"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 429)

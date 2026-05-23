@@ -14,8 +14,7 @@ import logging
 import time
 from contextlib import contextmanager
 
-from django.conf import settings
-from django.db import connection, reset_queries
+from django.db import connection
 
 logger = logging.getLogger(__name__)
 

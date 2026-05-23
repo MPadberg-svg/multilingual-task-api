@@ -25,6 +25,7 @@ class CircuitState(Enum):
 
 class CircuitOpenError(Exception):
     """Raised when circuit is OPEN and request is blocked."""
+
     pass
 
 
@@ -62,8 +63,7 @@ class CircuitBreaker:
         """Execute func through the circuit breaker."""
         if self.state == CircuitState.OPEN:
             raise CircuitOpenError(
-                f"Circuit '{self.name}' is OPEN. "
-                f"Retry in {self.recovery_timeout}s."
+                f"Circuit '{self.name}' is OPEN. " f"Retry in {self.recovery_timeout}s."
             )
         try:
             result = func(*args, **kwargs)

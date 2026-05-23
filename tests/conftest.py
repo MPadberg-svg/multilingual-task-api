@@ -1,7 +1,8 @@
 """Global pytest fixtures and configuration."""
 
+from unittest.mock import MagicMock
+
 import pytest
-from unittest.mock import MagicMock, patch
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +37,6 @@ def mock_event_publisher_redis(monkeypatch):
 
     # Also patch get_redis_connection to return fake_redis for any direct calls
     try:
-        from django_redis import get_redis_connection
         monkeypatch.setattr("django_redis.get_redis_connection", lambda name: fake_redis)
     except ImportError:
         pass

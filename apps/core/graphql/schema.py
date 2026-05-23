@@ -52,7 +52,9 @@ class TaskType:
         """Resolve description in the request language."""
         request = info.context
         lang = getattr(request, "language", "en")
-        return self.safe_translation_getter("description", language_code=lang, any_language=True) or ""
+        return (
+            self.safe_translation_getter("description", language_code=lang, any_language=True) or ""
+        )
 
     @strawberry.field
     def translations(self) -> List[TaskTranslationType]:
@@ -100,10 +102,14 @@ class Query:
         if not request.user.is_authenticated:
             return []
 
-        qs = Task.objects.filter(
-            is_active=True,
-            organization__members__user=request.user,
-        ).select_related("organization").prefetch_related("translations")
+        qs = (
+            Task.objects.filter(
+                is_active=True,
+                organization__members__user=request.user,
+            )
+            .select_related("organization")
+            .prefetch_related("translations")
+        )
 
         if organization_id:
             qs = qs.filter(organization_id=organization_id)
@@ -162,7 +168,9 @@ class Mutation:
     """Write operations with event publishing."""
 
     @strawberry.mutation
-    def create_task(self, info: Info, title: str, description: str, status: str = "pending") -> Optional[TaskType]:
+    def create_task(
+        self, info: Info, title: str, description: str, status: str = "pending"
+    ) -> Optional[TaskType]:
         """Create a new task for the authenticated user."""
         request = info.context
         if not request.user.is_authenticated:

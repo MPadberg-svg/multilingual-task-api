@@ -1,7 +1,5 @@
 """Tests for InputValidator — XSS and SQLi detection."""
 
-import pytest
-
 from apps.core.security import InputValidator
 
 
@@ -10,9 +8,7 @@ class TestInputValidator:
 
     def test_sanitize_strips_control_characters(self):
         """sanitize_string must remove null bytes and control chars."""
-        result = InputValidator.sanitize_string(
-            "Hello\x00\x01\x02World"
-        )
+        result = InputValidator.sanitize_string("Hello\x00\x01\x02World")
         assert "\x00" not in result
         assert "Hello" in result
         assert "World" in result
@@ -29,18 +25,14 @@ class TestInputValidator:
 
     def test_sanitize_html_tags_preserved(self):
         """sanitize_string does NOT strip HTML — it only removes control chars."""
-        result = InputValidator.sanitize_string(
-            "<script>alert('xss')</script>Hello"
-        )
+        result = InputValidator.sanitize_string("<script>alert('xss')</script>Hello")
         # sanitize_string is for plain text, not HTML escaping
         assert "<script>" in result
         assert "Hello" in result
 
     def test_sanitize_html_escapes_entities(self):
         """sanitize_html properly escapes HTML entities."""
-        result = InputValidator.sanitize_html(
-            "<script>alert('xss')</script>Hello"
-        )
+        result = InputValidator.sanitize_html("<script>alert('xss')</script>Hello")
         assert "<script>" not in result
         assert "&lt;script&gt;" in result
         assert "Hello" in result
@@ -73,9 +65,7 @@ class TestInputValidator:
 
     def test_detect_script_tag(self):
         """Standalone <script> tags must trigger XSS detection."""
-        is_dangerous, _ = InputValidator.detect_injection(
-            "<script>alert(1)</script>"
-        )
+        is_dangerous, _ = InputValidator.detect_injection("<script>alert(1)</script>")
         assert is_dangerous is True
 
     def test_detect_union_select(self):

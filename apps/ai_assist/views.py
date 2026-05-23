@@ -14,11 +14,7 @@ All endpoints:
 import logging
 
 from drf_spectacular.utils import extend_schema
-from rest_framework.decorators import (
-    api_view,
-    permission_classes,
-    throttle_classes,
-)
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
@@ -75,9 +71,7 @@ def suggest_task(request):
     try:
         # Aligned with services.py signature requirements
         result = _ai_service.suggest_task_translations(
-            user_id=str(request.user.id),
-            lang=lang,
-            user_input=description
+            user_id=str(request.user.id), lang=lang, user_input=description
         )
         return Response(result)
     except Exception as exc:
@@ -135,9 +129,7 @@ def evaluate_quality(request):
     try:
         # Aligned with services.py signature requirements
         result = _ai_service.evaluate_prompt_quality(
-            user_id=str(request.user.id),
-            lang=lang,
-            user_input=prompt_text
+            user_id=str(request.user.id), lang=lang, user_input=prompt_text
         )
         return Response(result)
     except Exception as exc:
@@ -196,9 +188,7 @@ def generate_test_cases(request):
     try:
         # Aligned with services.py signature requirements
         result = _ai_service.generate_rlhf_test_cases(
-            user_id=str(request.user.id),
-            lang=lang,
-            user_input=code_snippet
+            user_id=str(request.user.id), lang=lang, user_input=code_snippet
         )
         return Response(result)
     except Exception as exc:

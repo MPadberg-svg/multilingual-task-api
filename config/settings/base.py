@@ -6,11 +6,10 @@ Secrets and environment variables are loaded via python-decouple.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
-from decouple import config, Csv
+from decouple import Csv, config
 
 # =============================================================================
 # Project Paths
@@ -232,12 +231,8 @@ CACHE_TTL: dict[str, int] = {
 # =============================================================================
 # Celery
 # =============================================================================
-CELERY_BROKER_URL: str = config(
-    "CELERY_BROKER_URL", default="redis://localhost:6379/1"
-)
-CELERY_RESULT_BACKEND: str = config(
-    "CELERY_RESULT_BACKEND", default="redis://localhost:6379/2"
-)
+CELERY_BROKER_URL: str = config("CELERY_BROKER_URL", default="redis://localhost:6379/1")
+CELERY_RESULT_BACKEND: str = config("CELERY_RESULT_BACKEND", default="redis://localhost:6379/2")
 CELERY_ACCEPT_CONTENT: list[str] = ["json"]
 CELERY_TASK_SERIALIZER: str = "json"
 CELERY_RESULT_SERIALIZER: str = "json"

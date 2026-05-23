@@ -70,7 +70,5 @@ class Command(BaseCommand):
                 )
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"Warmed cache for {len(tasks)} tasks in {len(languages)} languages"
-            )
+            self.style.SUCCESS(f"Warmed cache for {len(tasks)} tasks in {len(languages)} languages")
         )

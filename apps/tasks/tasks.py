@@ -12,13 +12,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from celery import shared_task
 from django.conf import settings
 from django.core.cache import cache
-from django.utils import timezone
+
+from celery import shared_task
 
 from apps.ai_assist.services import AIService
-from apps.core.events import EventPublisher
 from apps.core.models import AuditLog, Organization
 from apps.tasks.models import Task
 
@@ -58,9 +57,7 @@ def generate_task_translations(self, task_id: str, user_input: str) -> dict[str,
             if lang in result:
                 task.set_current_language(lang)
                 task.title = result[lang].get("title", task.title or "")
-                task.description = result[lang].get(
-                    "description", task.description or ""
-                )
+                task.description = result[lang].get("description", task.description or "")
                 task.save()
 
         logger.info("Translations generated for task %s", task_id)

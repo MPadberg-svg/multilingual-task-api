@@ -93,6 +93,7 @@ class AIService:
         """Lazy OpenAI client initialisation."""
         if self._client is None:
             import openai
+
             self._client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
         return self._client
 
@@ -101,6 +102,7 @@ class AIService:
         Call OpenAI through the circuit breaker.
         Falls back gracefully if circuit is OPEN.
         """
+
         def _raw_call() -> str:
             response = self.client.chat.completions.create(
                 model=settings.OPENAI_MODEL,

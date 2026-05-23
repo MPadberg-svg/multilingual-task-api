@@ -5,7 +5,6 @@ content manually without django-parler-rest, which is incompatible
 with Django 5.1 (removed ugettext_lazy).
 """
 
-from django.conf import settings
 from rest_framework import serializers
 
 from apps.tasks.models import Task
@@ -62,7 +61,9 @@ class TaskSerializer(serializers.ModelSerializer):
         """Return description in the resolved request language."""
         request = self.context.get("request")
         lang = getattr(request, "language", "en") if request else "en"
-        return obj.safe_translation_getter("description", language_code=lang, any_language=True) or ""
+        return (
+            obj.safe_translation_getter("description", language_code=lang, any_language=True) or ""
+        )
 
     def get_translations(self, obj: Task) -> dict:
         """Return all available translations as a nested dict."""
@@ -100,10 +101,12 @@ class TaskSerializer(serializers.ModelSerializer):
         for lang_code, trans_data in translations_data.items():
             instance.set_current_language(lang_code)
             instance.title = trans_data.get(
-                "title", instance.safe_translation_getter("title", any_language=True) or ""
+                "title",
+                instance.safe_translation_getter("title", any_language=True) or "",
             )
             instance.description = trans_data.get(
-                "description", instance.safe_translation_getter("description", any_language=True) or ""
+                "description",
+                instance.safe_translation_getter("description", any_language=True) or "",
             )
 
         instance.save()

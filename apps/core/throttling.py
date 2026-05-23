@@ -1,138 +1,231 @@
-"""Custom DRF throttling for AI assistance endpoints.
+"""Tests for custom DRF throttling — AI assistance rate limiting.
 
-Provides sustained and burst rate limits for authenticated users only.
-Anonymous users are explicitly blocked (return None from get_cache_key).
-All throttle violations are logged at warning level for observability.
+Covers:
+    - Anonymous users are blocked (None cache key)
+    - Authenticated users have per-user cache keys
+    - Sustained hourly limit (20/hour)
+    - Burst per-minute limit (5/min)
+    - Violation logging
+    - Wait time calculation
 """
 
-from __future__ import annotations
+import time
+from unittest.mock import MagicMock, patch
 
-import logging
-from typing import Any
+from django.contrib.auth import get_user_model
 
-from rest_framework.request import Request
-from rest_framework.throttling import AnonRateThrottle, SimpleRateThrottle
-from rest_framework.views import View
+import pytest
+from rest_framework.test import APIRequestFactory
 
+from apps.core.throttling import AIAssistRateThrottle, BurstRateThrottle
 
-logger: logging.Logger = logging.getLogger(__name__)
-
-# Paths that should never be rate-limited (health probes, metrics)
-HEALTH_PROBE_PATHS: set[str] = {
-    "/api/v1/live/",
-    "/api/v1/health/",
-    "/api/v1/ready/",
-    "/api/v1/metrics/",
-}
+User = get_user_model()
 
 
-class HealthCheckAnonRateThrottle(AnonRateThrottle):
-    """Anonymous rate throttle that exempts health probe endpoints.
+class TestAIAssistRateThrottle:
+    """Tests for the sustained AI assistance rate throttle (20/hour)."""
 
-    Docker healthchecks hit /api/v1/live/ every 30s from 127.0.0.1.
-    Without this exemption, AnonRateThrottle (100/day) blocks them.
-    """
+    def test_anon_throttle_limits_unauthenticated(self):
+        """Anonymous users must receive None cache key (blocked)."""
+        throttle = AIAssistRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
 
-    def allow_request(self, request: Request, view: View) -> bool:
-        """Skip throttling for health probe paths."""
-        if request.path in HEALTH_PROBE_PATHS:
-            return True
-        return super().allow_request(request, view)
+        request.user = MagicMock()
+        request.user.is_authenticated = False
+
+        cache_key = throttle.get_cache_key(request, None)
+        assert cache_key is None
+
+    def test_user_throttle_limits_authenticated(self):
+        """Authenticated users must get a per-user cache key."""
+        throttle = AIAssistRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
+
+        user = MagicMock()
+        user.is_authenticated = True
+        user.pk = "user-123"
+        request.user = user
+
+        cache_key = throttle.get_cache_key(request, None)
+        assert cache_key == "mltask:throttle:ai_assist:user-123"
+
+    def test_throttle_allows_under_limit(self):
+        """Requests under the rate limit must be allowed."""
+        throttle = AIAssistRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
+
+        user = MagicMock()
+        user.is_authenticated = True
+        user.pk = "user-456"
+        request.user = user
+
+        with patch.object(throttle.cache, "get", return_value=[]):
+            with patch.object(throttle.cache, "set"):
+                allowed = throttle.allow_request(request, None)
+                assert allowed is True
+
+    def test_throttle_blocks_over_limit(self):
+        """Requests exceeding the rate limit must be blocked."""
+        throttle = AIAssistRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
+
+        user = MagicMock()
+        user.is_authenticated = True
+        user.pk = "user-789"
+        request.user = user
+
+        now = time.time()
+        fake_history = [now - i * 100 for i in range(20)]
+
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
+                allowed = throttle.allow_request(request, None)
+                assert allowed is False
+
+    def test_throttle_logs_violation(self):
+        """Blocked requests must log a warning."""
+        throttle = AIAssistRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
+
+        user = MagicMock()
+        user.is_authenticated = True
+        user.pk = "user-violation"
+        request.user = user
+
+        now = time.time()
+        fake_history = [now - i * 100 for i in range(20)]
+
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
+                with patch.object(throttle, "_log_violation") as mock_log:
+                    throttle.allow_request(request, None)
+                    mock_log.assert_called_once()
+
+    def test_throttle_wait_returns_seconds(self):
+        """Wait must return seconds until next request when limited."""
+        throttle = AIAssistRateThrottle()
+        now = time.time()
+        throttle.now = now
+        throttle.duration = 3600
+        throttle.history = [now - 500]
+
+        wait_time = throttle.wait()
+
+        assert wait_time is not None
+        assert wait_time == 3600 - (now - (now - 500))
+
+    def test_throttle_wait_returns_none_when_not_limited(self):
+        """Wait must return None when throttle is not limiting."""
+        throttle = AIAssistRateThrottle()
+        throttle.history = []
+        throttle.now = time.time()
+
+        wait_time = throttle.wait()
+
+        assert wait_time is None
 
 
-class AIAssistRateThrottle(SimpleRateThrottle):
-    """Sustained rate limit for AI assistance: 20 requests per hour per user.
+class TestBurstRateThrottle:
+    """Tests for the burst AI assistance rate throttle (5/min)."""
 
-    Only applies to authenticated users. Anonymous requests are blocked
-    by returning None from get_cache_key, which causes DRF to deny access.
-    """
+    def test_burst_throttle_allows_short_spikes(self):
+        """Burst throttle must allow up to 5 requests per minute."""
+        throttle = BurstRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
 
-    scope: str = "ai_assist"
-    rate: str = "20/hour"
-    cache_format: str = "mltask:throttle:%(scope)s:%(ident)s"
+        user = MagicMock()
+        user.is_authenticated = True
+        user.pk = "burst-user"
+        request.user = user
 
-    def get_cache_key(self, request: Request, view: View) -> str | None:
-        """Generate per-user cache key. Returns None for anonymous users."""
-        if not request.user or not request.user.is_authenticated:
-            return None
-        ident: str = str(request.user.pk)
-        return self.cache_format % {"scope": self.scope, "ident": ident}
+        now = time.time()
+        fake_history = [now - 10, now - 20, now - 30]
 
-    def allow_request(self, request: Request, view: View) -> bool:
-        """Check rate limit and log violations."""
-        allowed: bool = super().allow_request(request, view)
-        if not allowed:
-            self._log_violation(request, "ai_assist")
-        return allowed
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
+                allowed = throttle.allow_request(request, None)
+                assert allowed is True
 
-    def wait(self) -> float | None:
-        """Return seconds until the next request is allowed.
+    def test_burst_throttle_blocks_after_spike(self):
+        """6th request in a minute must be blocked."""
+        throttle = BurstRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
 
-        Calculates based on the oldest request in the throttle history.
-        Returns None if the throttle is not currently limiting.
-        """
-        if self.history:
-            remaining_duration: float = self.duration - (self.now - self.history[-1])
-            if remaining_duration > 0:
-                return remaining_duration
-        return None
+        user = MagicMock()
+        user.is_authenticated = True
+        user.pk = "burst-user-blocked"
+        request.user = user
 
-    @staticmethod
-    def _log_violation(request: Request, throttle_type: str) -> None:
-        """Log throttle violation with request context."""
-        logger.warning(
-            "throttle_violation",
-            extra={
-                "throttle_type": throttle_type,
-                "user_id": getattr(request.user, "pk", None),
-                "path": request.path,
-                "method": request.method,
-            },
-        )
+        now = time.time()
+        fake_history = [now - 10, now - 20, now - 30, now - 40, now - 50]
+
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
+                allowed = throttle.allow_request(request, None)
+                assert allowed is False
+
+    def test_burst_throttle_resets_after_window(self):
+        """Throttle must reset after the time window expires."""
+        throttle = BurstRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
+
+        user = MagicMock()
+        user.is_authenticated = True
+        user.pk = "burst-user-reset"
+        request.user = user
+
+        now = time.time()
+        fake_history = [now - 120, now - 130, now - 140, now - 150, now - 160]
+
+        with patch.object(throttle.cache, "get", return_value=fake_history):
+            with patch.object(throttle.cache, "set"):
+                allowed = throttle.allow_request(request, None)
+                assert allowed is True
+
+    def test_burst_throttle_anon_blocked(self):
+        """Anonymous users must be blocked from burst throttle."""
+        throttle = BurstRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
+
+        request.user = MagicMock()
+        request.user.is_authenticated = False
+
+        cache_key = throttle.get_cache_key(request, None)
+        assert cache_key is None
 
 
-class BurstRateThrottle(SimpleRateThrottle):
-    """Burst rate limit for AI assistance: 5 requests per minute per user.
+@pytest.mark.django_db
+class TestThrottlingIntegration:
+    """Integration-style tests with real DRF request flow."""
 
-    Provides short-term burst protection alongside the sustained hourly limit.
-    Anonymous users are blocked.
-    """
+    def test_anon_request_blocked_by_throttle(self):
+        """Anonymous API request must be throttled (403/429)."""
+        throttle = AIAssistRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
+        request.user = MagicMock()
+        request.user.is_authenticated = False
 
-    scope: str = "ai_assist_burst"
-    rate: str = "5/min"
-    cache_format: str = "mltask:throttle:%(scope)s:%(ident)s"
+        cache_key = throttle.get_cache_key(request, None)
+        assert cache_key is None
 
-    def get_cache_key(self, request: Request, view: View) -> str | None:
-        """Generate per-user cache key. Returns None for anonymous users."""
-        if not request.user or not request.user.is_authenticated:
-            return None
-        ident: str = str(request.user.pk)
-        return self.cache_format % {"scope": self.scope, "ident": ident}
+    def test_auth_request_gets_user_cache_key(self):
+        """Authenticated user must get a stable cache key."""
+        user = User.objects.create_user(email="throttle@example.com", password="pass")
+        throttle = AIAssistRateThrottle()
+        factory = APIRequestFactory()
+        request = factory.get("/api/v1/ai/suggest/")
+        request.user = user
 
-    def allow_request(self, request: Request, view: View) -> bool:
-        """Check burst rate limit and log violations."""
-        allowed: bool = super().allow_request(request, view)
-        if not allowed:
-            self._log_violation(request, "ai_assist_burst")
-        return allowed
-
-    def wait(self) -> float | None:
-        """Return seconds until the next request is allowed."""
-        if self.history:
-            remaining_duration: float = self.duration - (self.now - self.history[-1])
-            if remaining_duration > 0:
-                return remaining_duration
-        return None
-
-    @staticmethod
-    def _log_violation(request: Request, throttle_type: str) -> None:
-        """Log throttle violation with request context."""
-        logger.warning(
-            "throttle_violation",
-            extra={
-                "throttle_type": throttle_type,
-                "user_id": getattr(request.user, "pk", None),
-                "path": request.path,
-                "method": request.method,
-            },
-        )
+        cache_key = throttle.get_cache_key(request, None)
+        expected = f"mltask:throttle:ai_assist:{user.pk}"
+        assert cache_key == expected

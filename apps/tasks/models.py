@@ -9,6 +9,7 @@ import uuid
 
 from django.contrib.auth import get_user_model
 from django.db import models
+
 from parler.models import TranslatableModel, TranslatedFields
 
 User = get_user_model()
