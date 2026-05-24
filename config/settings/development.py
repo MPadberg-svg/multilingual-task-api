@@ -6,24 +6,29 @@ short-lived DB connections, and cache exception tolerance.
 
 from __future__ import annotations
 
-from .base import *  # noqa: F401,F403
+from . import base as base_settings
+
+for _name in dir(base_settings):
+    if _name.isupper():
+        globals()[_name] = getattr(base_settings, _name)
+del _name
 
 # =============================================================================
 # Debug Mode
 # =============================================================================
-DEBUG: bool = True
+DEBUG = True
 
-ALLOWED_HOSTS: list[str] = ["*"]
+ALLOWED_HOSTS = ["*"]
 
 # =============================================================================
 # Database — Disable persistent connections in development
 # =============================================================================
-DATABASES["default"]["CONN_MAX_AGE"] = 0  # type: ignore[index]  # noqa: F405
+DATABASES["default"]["CONN_MAX_AGE"] = 0  # type: ignore[index]
 
 # =============================================================================
 # DRF — Enable browsable API in development
 # =============================================================================
-REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"] = [  # noqa: F405
+REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"] = [
     "rest_framework.renderers.JSONRenderer",
     "rest_framework.renderers.BrowsableAPIRenderer",
 ]
@@ -31,19 +36,19 @@ REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"] = [  # noqa: F405
 # =============================================================================
 # Email
 # =============================================================================
-EMAIL_BACKEND: str = "django.core.mail.backends.console.EmailBackend"
+EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
 # =============================================================================
 # Celery — Use real broker in development (not eager)
 # =============================================================================
-CELERY_TASK_ALWAYS_EAGER: bool = False
+CELERY_TASK_ALWAYS_EAGER = False
 
 # =============================================================================
 # Logging — Verbose application logs
 # =============================================================================
-LOGGING["loggers"]["apps"]["level"] = "DEBUG"  # noqa: F405
+LOGGING["loggers"]["apps"]["level"] = "DEBUG"
 
 # =============================================================================
 # Cache — Gracefully degrade if Redis is unavailable during development
 # =============================================================================
-CACHES["default"]["OPTIONS"]["IGNORE_EXCEPTIONS"] = True  # type: ignore[index]  # noqa: F405
+CACHES["default"]["OPTIONS"]["IGNORE_EXCEPTIONS"] = True  # type: ignore[index]

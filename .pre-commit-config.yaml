@@ -10,7 +10,7 @@ repos:
       - id: detect-private-key
 
   - repo: https://github.com/psf/black
-    rev: 23.12.1
+    rev: 24.4.0
     hooks:
       - id: black
         language_version: python3.12
@@ -26,3 +26,17 @@ repos:
     hooks:
       - id: flake8
         args: [--max-line-length=100, --exclude=apps/**/migrations]
+
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy
+        entry: python -m mypy apps/ --ignore-missing-imports
+        language: system
+        pass_filenames: false
+      - id: pytest-fast
+        name: pytest-fast
+        entry: python -m pytest -q -m "not slow"
+        language: system
+        pass_filenames: false
+        stages: [pre-push]

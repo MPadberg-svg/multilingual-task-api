@@ -12,7 +12,9 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 ### In Progress
 - WebSocket consumer test coverage
 - Circuit breaker for OpenAI API
-- Pre-commit hooks integration
+
+### Completed
+- Pre-commit hooks integration (Black, isort, flake8, mypy, pytest pre-push)
 
 ---
 

@@ -1,5 +1,5 @@
 .PHONY: up down build migrate seed test test-cov cache-flush lint format shell logs \
-        docker-clean locust-benchmark create-admin warm-cache setup security test-fast \
+        docker-clean locust-benchmark create-admin warm-cache setup init-env security test-fast \
         locust-headless
 
 # ─── Docker ───────────────────────────────────────────────────────────────────
@@ -88,7 +88,10 @@ cache-flush:
 
 # ─── Full Setup (first time) ──────────────────────────────────────────────────
 
-setup: build up migrate seed create-admin warm-cache
+init-env:
+	@if [ ! -f .env ]; then cp .env.example .env; echo "📄 Created .env from .env.example"; else echo "📄 .env already exists"; fi
+
+setup: init-env build up migrate seed create-admin warm-cache
 	@echo "✅ Stack ready at http://localhost:8000"
 	@echo "📚 Docs at http://localhost:8000/api/docs/"
 	@echo "🔐 Admin at http://localhost:8000/admin/"
