@@ -83,8 +83,8 @@ class HealthCheckView(APIView):
                 "status": "ok",
                 "latency_ms": round((time.perf_counter() - start) * 1000.0, 2),
             }
-        except (OperationalError, DatabaseError) as exc:
-            return {"status": "down", "error": str(exc)}
+        except (OperationalError, DatabaseError):
+            return {"status": "down", "error": "database_unavailable"}
 
     @staticmethod
     def _check_redis() -> dict[str, Any]:
@@ -97,8 +97,8 @@ class HealthCheckView(APIView):
                 "status": "ok",
                 "latency_ms": round((time.perf_counter() - start) * 1000.0, 2),
             }
-        except (RedisError, Exception) as exc:
-            return {"status": "down", "error": str(exc)}
+        except (RedisError, Exception):
+            return {"status": "down", "error": "redis_unavailable"}
 
 
 class ReadinessView(APIView):
@@ -124,8 +124,8 @@ class ReadinessView(APIView):
                 "status": "ok",
                 "latency_ms": round((time.monotonic() - start) * 1000, 2),
             }
-        except (OperationalError, DatabaseError) as e:
-            checks["database"] = {"status": "error", "detail": str(e)}
+        except (OperationalError, DatabaseError):
+            checks["database"] = {"status": "error", "detail": "database_unavailable"}
             is_ready = False
 
         # Redis check
@@ -139,8 +139,8 @@ class ReadinessView(APIView):
                 "status": "ok",
                 "latency_ms": round((time.monotonic() - start) * 1000, 2),
             }
-        except Exception as e:
-            checks["cache"] = {"status": "error", "detail": str(e)}
+        except Exception:
+            checks["cache"] = {"status": "error", "detail": "cache_unavailable"}
             is_ready = False
 
         http_status = 200 if is_ready else 503
