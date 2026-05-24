@@ -54,9 +54,12 @@ class _BaseAIAssistThrottle(SimpleRateThrottle):
         )
 
     def wait(self) -> float | None:
-        if not self.history:
+        history = getattr(self, "history", None)
+        duration = getattr(self, "duration", None)
+        now = getattr(self, "now", None)
+        if not history or duration is None or now is None:
             return None
-        return max(self.duration - (self.now - self.history[-1]), 0.0)
+        return max(float(duration) - (float(now) - float(history[-1])), 0.0)
 
 
 class AIAssistRateThrottle(_BaseAIAssistThrottle):
