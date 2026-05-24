@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-import pytest
 from django.contrib.auth import get_user_model
 from django.http import HttpResponse, JsonResponse
 from django.test import RequestFactory
+
+import pytest
 
 from apps.core.middleware import (
     ContentSecurityPolicyMiddleware,

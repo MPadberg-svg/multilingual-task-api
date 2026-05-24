@@ -65,7 +65,7 @@ class TaskType:
                 title=t.title,
                 description=t.description,
             )
-            for t in self.get_translations()
+            for t in self.translations.all()
         ]
 
 

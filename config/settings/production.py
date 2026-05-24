@@ -12,10 +12,16 @@ from decouple import Csv, config
 
 from . import base as base_settings
 
+SECRET_KEY = base_settings.SECRET_KEY
+DATABASES = base_settings.DATABASES
+REST_FRAMEWORK = base_settings.REST_FRAMEWORK
+LOGGING = base_settings.LOGGING
+CACHES = base_settings.CACHES
+
 for _name in dir(base_settings):
     if _name.isupper():
         globals()[_name] = getattr(base_settings, _name)
-del _name
+del _name, base_settings
 
 if SECRET_KEY == "django-insecure-test-key":
     raise ImproperlyConfigured("SECRET_KEY must be set via environment variable in production.")

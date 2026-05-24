@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-import pytest
 from django.contrib.auth import get_user_model
 from django.test import override_settings
+
+import pytest
 
 from apps.core.models import AuditLog, Organization
 from apps.tasks.models import Task
@@ -66,10 +67,15 @@ def test_generate_task_translations_retries_on_ai_error():
     user = User.objects.create_user(email="retry@example.com", password="pass1234")
     task = Task.objects.create(user=user, status="pending")
 
-    with patch(
-        "apps.tasks.tasks.AIService.suggest_task_translations",
-        side_effect=Exception("openai down"),
-    ), patch.object(generate_task_translations, "retry", side_effect=RuntimeError("retrying")) as retry:
+    with (
+        patch(
+            "apps.tasks.tasks.AIService.suggest_task_translations",
+            side_effect=Exception("openai down"),
+        ),
+        patch.object(
+            generate_task_translations, "retry", side_effect=RuntimeError("retrying")
+        ) as retry,
+    ):
         with pytest.raises(RuntimeError, match="retrying"):
             generate_task_translations.run(str(task.id), "boom")
     retry.assert_called_once()

@@ -6,10 +6,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from uuid import uuid4
 
-import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser
 from django.test import RequestFactory
+
+import pytest
 
 from apps.core.graphql.schema import Mutation, Query, TaskType
 from apps.core.models import Organization, OrganizationMember

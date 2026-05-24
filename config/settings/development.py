@@ -8,10 +8,15 @@ from __future__ import annotations
 
 from . import base as base_settings
 
+DATABASES = base_settings.DATABASES
+REST_FRAMEWORK = base_settings.REST_FRAMEWORK
+LOGGING = base_settings.LOGGING
+CACHES = base_settings.CACHES
+
 for _name in dir(base_settings):
     if _name.isupper():
         globals()[_name] = getattr(base_settings, _name)
-del _name
+del _name, base_settings
 
 # =============================================================================
 # Debug Mode
