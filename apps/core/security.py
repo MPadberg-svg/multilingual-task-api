@@ -26,21 +26,25 @@ class InputValidator:
             Python code constructs (eval, exec, os.system, etc.).
     """
 
+    # Patterns target structural SQLi markers, not lone English words like
+    # "select" or "update" that appear in normal user prose. All DB access in
+    # this project goes through the ORM with parameterised binding, so this
+    # is defense-in-depth for LLM-bound input — not the primary control.
     SQL_INJECTION_PATTERNS = [
-        r"\bDROP\b",
-        r"\bUNION\b",
-        r"\bSELECT\b",
-        r"\bINSERT\b",
-        r"\bDELETE\b",
-        r"\bUPDATE\b",
-        r"\bEXEC\b",
-        r"\bEXECUTE\b",
-        r"\bWAITFOR\b",
+        r"\bUNION\s+(ALL\s+)?SELECT\b",
+        r"\bDROP\s+(TABLE|DATABASE|SCHEMA)\b",
+        r"\bINSERT\s+INTO\b",
+        r"\bDELETE\s+FROM\b",
+        r"\bUPDATE\s+\w+\s+SET\b",
+        r"\bSELECT\s+.+\s+FROM\b",
+        r";\s*(SELECT|INSERT|UPDATE|DELETE|DROP|EXEC|EXECUTE)\b",
+        r"'\s*(OR|AND)\s+\d+\s*=\s*\d+",
+        r"\bWAITFOR\s+DELAY\b",
         r"--\s*$",
         r";--",
         r"/\*.*?\*/",
-        r"\bxp_",
-        r"\bsp_",
+        r"\bxp_\w+",
+        r"\bsp_executesql\b",
     ]
 
     SCRIPT_PATTERNS = [

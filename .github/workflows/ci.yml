@@ -76,16 +76,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install bandit safety
+      - run: pip install bandit pip-audit
       - run: bandit -r apps/ -ll --exclude apps/migrations
-      - run: safety check -r requirements.txt
+      - run: pip-audit -r requirements.txt --strict
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: bandit-report
           path: bandit-report.json
-      - if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: safety-report
-          path: safety-report.json

@@ -57,6 +57,16 @@ variable "ecs_desired_count" {
   default = 2
 }
 
+variable "ecs_task_cpu" {
+  description = "Fargate task CPU units (1024 = 1 vCPU)"
+  default     = "512"
+}
+
+variable "ecs_task_memory" {
+  description = "Fargate task memory (MiB)"
+  default     = "1024"
+}
+
 variable "common_tags" {
   type = map(string)
   default = {

@@ -1,5 +1,3 @@
-from django.db.models import QuerySet
-
 """Django admin configuration for the Task model.
 
 Provides a TranslatableAdmin interface with soft-delete awareness,
@@ -7,6 +5,7 @@ allowing administrators to view and restore soft-deleted tasks.
 """
 
 from django.contrib import admin
+from django.db.models import QuerySet
 
 from parler.admin import TranslatableAdmin
 

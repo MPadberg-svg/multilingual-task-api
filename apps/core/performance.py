@@ -14,6 +14,7 @@ import logging
 import time
 from contextlib import contextmanager
 
+from django.conf import settings
 from django.db import connection
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,10 @@ logger = logging.getLogger(__name__)
 @contextmanager
 def QueryProfiler(threshold_ms: float = 100.0, max_queries: int = 20):
     """Profile a code block for query count and execution duration.
+
+    ``connection.queries`` is only populated when ``settings.DEBUG`` is
+    truthy, so the N+1 check is skipped otherwise. Duration is always
+    measured.
 
     Args:
         threshold_ms: Duration (ms) above which a warning is logged.
@@ -35,19 +40,20 @@ def QueryProfiler(threshold_ms: float = 100.0, max_queries: int = 20):
         ...     Task.objects.all()
     """
     start = time.perf_counter()
-    query_count = len(connection.queries)
+    query_count = len(connection.queries) if settings.DEBUG else 0
 
     yield
 
     duration_ms = (time.perf_counter() - start) * 1000
-    queries_executed = len(connection.queries) - query_count
 
-    if queries_executed > max_queries:
-        logger.warning(
-            "N+1 detected: %s queries executed (threshold: %s)",
-            queries_executed,
-            max_queries,
-        )
+    if settings.DEBUG:
+        queries_executed = len(connection.queries) - query_count
+        if queries_executed > max_queries:
+            logger.warning(
+                "N+1 detected: %s queries executed (threshold: %s)",
+                queries_executed,
+                max_queries,
+            )
     if duration_ms > threshold_ms:
         logger.warning(
             "Slow query detected: %.2fms (threshold: %.2fms)",

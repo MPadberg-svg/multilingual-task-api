@@ -91,13 +91,7 @@ resource "aws_security_group" "rds" {
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs.id]
   }
-
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = []
-  }
+  # No egress: managed RDS does not initiate outbound traffic to workloads.
 }
 
 resource "aws_security_group" "redis" {
@@ -110,13 +104,19 @@ resource "aws_security_group" "redis" {
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs.id]
   }
+  # No egress: ElastiCache nodes do not initiate outbound traffic.
+}
 
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = []
-  }
+resource "aws_db_subnet_group" "main" {
+  name       = "${var.project_name}-db-subnets"
+  subnet_ids = module.vpc.private_subnets
+
+  tags = var.common_tags
+}
+
+resource "aws_elasticache_subnet_group" "main" {
+  name       = "${var.project_name}-redis-subnets"
+  subnet_ids = module.vpc.private_subnets
 }
 
 resource "aws_db_instance" "postgres" {
@@ -161,6 +161,105 @@ resource "aws_elasticache_replication_group" "redis" {
 
   security_group_ids = [aws_security_group.redis.id]
   subnet_group_name  = aws_elasticache_subnet_group.main.name
+
+  tags = var.common_tags
+}
+
+resource "aws_lb" "main" {
+  name               = "${var.project_name}-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = module.vpc.public_subnets
+
+  tags = var.common_tags
+}
+
+resource "aws_lb_target_group" "api" {
+  name        = "${var.project_name}-api-tg"
+  port        = 8000
+  protocol    = "HTTP"
+  vpc_id      = module.vpc.vpc_id
+  target_type = "ip"
+
+  health_check {
+    path                = "/api/v1/health/"
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    timeout             = 5
+    interval            = 30
+    matcher             = "200"
+  }
+
+  tags = var.common_tags
+}
+
+resource "aws_lb_listener" "http" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+}
+
+resource "aws_iam_role" "ecs_task_execution" {
+  name = "${var.project_name}-ecs-task-execution"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = var.common_tags
+}
+
+resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
+  role       = aws_iam_role.ecs_task_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_cloudwatch_log_group" "api" {
+  name              = "/ecs/${var.project_name}-api"
+  retention_in_days = 30
+
+  tags = var.common_tags
+}
+
+resource "aws_ecs_task_definition" "api" {
+  family                   = "${var.project_name}-api"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.ecs_task_cpu
+  memory                   = var.ecs_task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+
+  container_definitions = jsonencode([{
+    name      = "api"
+    image     = "${aws_ecr_repository.api.repository_url}:latest"
+    essential = true
+    portMappings = [{
+      containerPort = 8000
+      protocol      = "tcp"
+    }]
+    environment = [
+      { name = "DJANGO_SETTINGS_MODULE", value = "config.settings.production" },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.api.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "api"
+      }
+    }
+  }])
 
   tags = var.common_tags
 }

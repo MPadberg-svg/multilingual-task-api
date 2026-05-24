@@ -34,10 +34,12 @@ INSTALLED_APPS: list[str] = [
     # Third-party
     "rest_framework",
     "rest_framework_simplejwt",
+    "rest_framework_simplejwt.token_blacklist",
     "parler",
     "django_filters",
     "drf_spectacular",
     "channels",
+    "django_celery_beat",
     # Local apps
     "apps.core",
     "apps.tasks",
@@ -47,6 +49,7 @@ INSTALLED_APPS: list[str] = [
 
 MIDDLEWARE: list[str] = [
     "django.middleware.security.SecurityMiddleware",
+    "apps.core.middleware.CorrelationIdMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "apps.core.middleware.LanguageResolutionMiddleware",
     "django.middleware.locale.LocaleMiddleware",
@@ -55,8 +58,11 @@ MIDDLEWARE: list[str] = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "apps.core.middleware.TenantMiddleware",
+    "apps.core.middleware.TenantPermissionMiddleware",
     "apps.core.middleware.RequestLoggingMiddleware",
     "apps.analytics.middleware.RequestTimingMiddleware",
+    "apps.core.middleware.ContentSecurityPolicyMiddleware",
 ]
 
 ROOT_URLCONF: str = "config.urls"
@@ -169,6 +175,24 @@ if DEBUG:
     REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"].append(
         "rest_framework.renderers.BrowsableAPIRenderer"
     )
+
+# =============================================================================
+# SimpleJWT
+# =============================================================================
+from datetime import timedelta  # noqa: E402
+
+SIMPLE_JWT: dict[str, Any] = {
+    "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
+    "REFRESH_TOKEN_LIFETIME": timedelta(days=7),
+    "ROTATE_REFRESH_TOKENS": True,
+    "BLACKLIST_AFTER_ROTATION": True,
+    "UPDATE_LAST_LOGIN": True,
+    "ALGORITHM": "HS256",
+    "SIGNING_KEY": config("JWT_SIGNING_KEY", default=SECRET_KEY),
+    "AUTH_HEADER_TYPES": ("Bearer",),
+    "USER_ID_FIELD": "id",
+    "USER_ID_CLAIM": "user_id",
+}
 
 # =============================================================================
 # drf-spectacular (OpenAPI 3.0)
