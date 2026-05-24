@@ -76,7 +76,7 @@ format:
 
 security:
 	bandit -r apps/ -ll
-	safety check -r requirements.txt
+	pip-audit -r requirements.txt
 
 # ─── Dev Shortcuts ────────────────────────────────────────────────────────────
 

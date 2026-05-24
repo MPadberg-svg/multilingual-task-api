@@ -13,9 +13,7 @@ from decouple import Csv, config
 from .base import *  # noqa: F401,F403
 
 if SECRET_KEY == "django-insecure-test-key":  # noqa: F405
-    raise ImproperlyConfigured(
-        "SECRET_KEY must be set via environment variable in production."
-    )
+    raise ImproperlyConfigured("SECRET_KEY must be set via environment variable in production.")
 
 # =============================================================================
 # Debug Mode
