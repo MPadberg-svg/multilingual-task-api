@@ -31,6 +31,8 @@ ALLOWED_HOSTS: list[str] = config("ALLOWED_HOSTS", cast=Csv())  # noqa: F405
 # Security Headers — HTTPS & HSTS
 # =============================================================================
 SECURE_SSL_REDIRECT: bool = True
+SECURE_PROXY_SSL_HEADER: tuple[str, str] = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST: bool = True
 SECURE_HSTS_SECONDS: int = 31_536_000  # 1 year
 SECURE_HSTS_INCLUDE_SUBDOMAINS: bool = True
 SECURE_HSTS_PRELOAD: bool = True
@@ -39,6 +41,11 @@ CSRF_COOKIE_SECURE: bool = True
 SECURE_CONTENT_TYPE_NOSNIFF: bool = True
 SECURE_BROWSER_XSS_FILTER: bool = True
 X_FRAME_OPTIONS: str = "DENY"
+SECURE_REDIRECT_EXEMPT: list[str] = [
+    r"^api/v1/live/$",
+    r"^api/v1/health/$",
+    r"^api/v1/ready/$",
+]
 
 # =============================================================================
 # Database — Persistent connections with statement timeout

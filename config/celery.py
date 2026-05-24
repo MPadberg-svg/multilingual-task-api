@@ -11,7 +11,7 @@ import os
 from celery import Celery
 
 # Set the default Django settings module before Celery app initialization.
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.development")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "config.settings.base")
 
 # Initialize Celery application.
 app: Celery = Celery("multilingual_task_api")
@@ -20,7 +20,7 @@ app: Celery = Celery("multilingual_task_api")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 
 # Route tasks to dedicated queues by app domain.
-app.conf.task_routes: dict[str, dict[str, str]] = {
+app.conf.task_routes = {
     "apps.tasks.tasks.*": {"queue": "tasks"},
     "apps.ai_assist.services.*": {"queue": "ai"},
 }
@@ -28,7 +28,7 @@ app.conf.task_routes: dict[str, dict[str, str]] = {
 
 # Auto-discover tasks after Django apps are fully loaded.
 # This is called explicitly after django.setup() to ensure all apps are ready.
-def discover_tasks():
+def discover_tasks() -> None:
     """Discover tasks from all installed Django apps."""
     from django.conf import settings
 

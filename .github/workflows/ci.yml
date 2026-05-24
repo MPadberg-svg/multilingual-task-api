@@ -16,41 +16,17 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements-dev.txt
-      - run: flake8 apps/ --max-line-length=100 --exclude=migrations
-      - run: black --check apps/
-      - run: isort --check-only apps/
-      - run: mypy apps/
+      - run: flake8 apps/ config/ tests/ --max-line-length=100 --exclude=migrations
+      - run: black --check apps/ config/ tests/
+      - run: isort --check-only apps/ config/ tests/
+      - run: mypy apps/ --ignore-missing-imports
 
   test:
     name: Test Suite
     runs-on: ubuntu-latest
     needs: lint
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: test_db
-          POSTGRES_USER: postgres
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-      redis:
-        image: redis:7
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 6379:6379
     env:
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/test_db
-      REDIS_URL: redis://localhost:6379/0
+      DJANGO_SETTINGS_MODULE: config.settings.test
       SECRET_KEY: test-secret
       OPENAI_API_KEY: test-key
     steps:
@@ -59,7 +35,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: python manage.py migrate
       - run: pytest --cov=apps --cov-report=xml --cov-fail-under=90
       - uses: codecov/codecov-action@v4
         with:

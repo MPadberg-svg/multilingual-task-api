@@ -11,6 +11,7 @@ Channel naming convention:
 
 import json
 import logging
+from typing import Any
 
 from django.utils import timezone
 
@@ -26,13 +27,30 @@ class EventPublisher:
     """
 
     _instance = None
+    redis: Any | None = None
+    _redis_supported: bool = True
 
-    def __new__(cls):
+    def __new__(cls) -> "EventPublisher":
         """Ensure singleton with lazy Redis connection."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance.redis = get_redis_connection("default")
         return cls._instance
+
+    def _ensure_redis(self) -> Any | None:
+        """Lazily initialize Redis connection when publishing."""
+        if not self._redis_supported:
+            return None
+        if self.redis is not None:
+            return self.redis
+        try:
+            self.redis = get_redis_connection("default")
+        except NotImplementedError:
+            self._redis_supported = False
+            self.redis = None
+        except Exception:
+            logger.warning("Failed to initialize Redis connection", exc_info=True)
+            self.redis = None
+        return self.redis
 
     def _get_channel(self, org_id: str, event_type: str) -> str:
         """Build a scoped Redis channel name.
@@ -52,7 +70,10 @@ class EventPublisher:
         Logs a warning if Redis is unavailable instead of crashing.
         """
         try:
-            self.redis.publish(channel, message)
+            redis_conn = self._ensure_redis()
+            if redis_conn is None:
+                return
+            redis_conn.publish(channel, message)
         except Exception:
             logger.warning("Failed to publish to Redis channel %s", channel, exc_info=True)
 

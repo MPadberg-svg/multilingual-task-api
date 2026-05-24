@@ -97,7 +97,7 @@ class HealthCheckView(APIView):
                 "status": "ok",
                 "latency_ms": round((time.perf_counter() - start) * 1000.0, 2),
             }
-        except RedisError as exc:
+        except (RedisError, Exception) as exc:
             return {"status": "down", "error": str(exc)}
 
 

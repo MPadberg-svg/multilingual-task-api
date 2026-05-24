@@ -14,6 +14,7 @@ import logging
 import time
 from contextlib import contextmanager
 
+from django.conf import settings
 from django.db import connection
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,10 @@ def QueryProfiler(threshold_ms: float = 100.0, max_queries: int = 20):
         >>> with QueryProfiler(threshold_ms=50.0, max_queries=5):
         ...     Task.objects.all()
     """
+    if not settings.DEBUG:
+        yield
+        return
+
     start = time.perf_counter()
     query_count = len(connection.queries)
 
