@@ -53,6 +53,11 @@ class _BaseAIAssistThrottle(SimpleRateThrottle):
             },
         )
 
+    def wait(self) -> float | None:
+        if not self.history:
+            return None
+        return max(self.duration - (self.now - self.history[-1]), 0.0)
+
 
 class AIAssistRateThrottle(_BaseAIAssistThrottle):
     """Sustained AI-assist quota (configured as 20/hour)."""
