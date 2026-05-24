@@ -19,7 +19,7 @@ BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
 # =============================================================================
 # Core Django Settings
 # =============================================================================
-SECRET_KEY: str = config("SECRET_KEY")
+SECRET_KEY: str = config("SECRET_KEY", default="django-insecure-test-key")
 DEBUG: bool = config("DEBUG", default=False, cast=bool)
 ALLOWED_HOSTS: list[str] = config("ALLOWED_HOSTS", default="", cast=Csv())
 
