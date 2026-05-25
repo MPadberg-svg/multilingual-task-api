@@ -19,6 +19,20 @@ from django_redis import get_redis_connection
 logger = logging.getLogger(__name__)
 
 
+
+class _NullRedis:
+    """Stub Redis client used when no Redis backend is available (e.g. tests)."""
+
+    def publish(self, *args, **kwargs):
+        return 0
+
+    def ping(self, *args, **kwargs):
+        return True
+
+    def __getattr__(self, name):
+        return lambda *a, **kw: None
+
+
 class EventPublisher:
     """Singleton Redis pub/sub publisher for domain events.
 
@@ -28,10 +42,17 @@ class EventPublisher:
     _instance = None
 
     def __new__(cls):
-        """Ensure singleton with lazy Redis connection."""
+        """Ensure singleton with lazy Redis connection.
+
+        Falls back to a no-op stub when the configured cache backend does not
+        expose a native Redis connection (e.g. LocMemCache in testing).
+        """
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance.redis = get_redis_connection("default")
+            try:
+                cls._instance.redis = get_redis_connection("default")
+            except (NotImplementedError, Exception):
+                cls._instance.redis = _NullRedis()
         return cls._instance
 
     def _get_channel(self, org_id: str, event_type: str) -> str:

@@ -192,26 +192,44 @@ multilingual-task-api/
 
 ### Prerequisites
 
-- Docker + Docker Compose
+- Docker + Docker Compose (for the full stack)
+- Python 3.12+ (for local development without Docker)
 - Git
 
-### 1. Clone and configure
+### Option A — Full Docker stack (recommended)
 
 ```bash
 git clone https://github.com/MPadberg-svg/multilingual-task-api.git
 cd multilingual-task-api
+
+# Configure environment
 cp .env.example .env
-# Edit .env — set OPENAI_API_KEY and SECRET_KEY
+# Required: set OPENAI_API_KEY and a strong SECRET_KEY in .env
+
+# One-command setup: build → up → migrate → seed → admin → cache warm
+make setup
 ```
 
-### 2. Full setup (one command)
+### Option B — Local development (no Docker)
+
+Use this when you want fast iteration without spinning up containers.
+The test suite uses **SQLite in-memory** so no database is needed.
 
 ```bash
-make setup
-# Runs: build → up → migrate → seed → create-admin → warm-cache
+git clone https://github.com/MPadberg-svg/multilingual-task-api.git
+cd multilingual-task-api
+
+# Install all dependencies
+pip install -r requirements.txt -r requirements-dev.txt
+
+# Configure environment (SQLite is used automatically in tests)
+cp .env.example .env
+
+# Run the full test suite instantly — no infrastructure required
+pytest
 ```
 
-### 3. Verify
+### 3. Verify (Docker)
 
 ```bash
 # Liveness (process alive)
@@ -228,18 +246,19 @@ open http://localhost:8000/admin/
 # Email: admin@example.com  Password: adminpass123
 ```
 
-### Individual make targets
+### Make targets
 
 ```bash
 make up              # Start Docker services (db, redis, api, celery)
 make down            # Stop all services
 make build           # Rebuild images (--no-cache)
-make migrate         # Run database migrations
+make migrate         # Run database migrations inside container
 make seed            # Create 3 demo users + 15 multilingual tasks
 make create-admin    # Create superuser (idempotent)
 make warm-cache      # Pre-warm Redis cache
-make test            # Run full test suite with coverage
-make test-fast       # Fast run, no coverage report
+make test            # Run full test suite with coverage (inside Docker)
+make test-fast       # Fast run, no coverage report (inside Docker)
+make test-local      # Run tests locally without Docker (uses SQLite)
 make test-cov        # Generate HTML coverage report
 make lint            # flake8 + mypy
 make format          # black + isort (auto-fix)
@@ -552,31 +571,39 @@ mutation {
 
 ## Testing
 
+### Running tests
+
 ```bash
-# Full suite with coverage gate (≥90%)
-make test
+# ── Without Docker (uses SQLite + in-memory cache) ──────────────────────────
+pytest                                      # full suite — 132 tests
+pytest -x -q                               # fail-fast, quiet
+pytest -k "test_cache"                     # filter by keyword
+pytest apps/tasks/tests/test_api.py -xvs  # single module, verbose
+pytest --cov=apps --cov-report=term-missing  # with coverage
 
-# Fast run (no coverage)
-make test-fast
-
-# HTML coverage report
-make test-cov
-open htmlcov/index.html
-
-# Run a specific test module
+# ── Inside Docker container ──────────────────────────────────────────────────
+make test            # full suite with coverage gate
+make test-fast       # fast run, no coverage
+make test-cov        # generate HTML report → open htmlcov/index.html
 docker-compose exec api pytest apps/tasks/tests/test_api.py -xvs
-
-# Run by keyword
 docker-compose exec api pytest -k "test_cache" -v
 
-# Load test (UI at localhost:8089)
-make locust-benchmark
-
-# Headless load test: 50 users, 60s
-make locust-headless
+# ── Load testing ─────────────────────────────────────────────────────────────
+make locust-benchmark   # Web UI at http://localhost:8089
+make locust-headless    # Headless: 50 users, 60s run, CSV output
 ```
 
-### Test Suite (114 tests)
+### Settings strategy
+
+| Context | Settings module | Database | Cache |
+|---------|----------------|----------|-------|
+| Tests (`pytest`) | `config.settings.testing` | SQLite `:memory:` | LocMemCache |
+| Development | `config.settings.development` | PostgreSQL | Redis |
+| Production | `config.settings.production` | PostgreSQL | Redis |
+
+The `config.settings.testing` module is selected automatically via `pytest.ini` (`DJANGO_SETTINGS_MODULE`). This means the full test suite runs with **zero infrastructure** — no PostgreSQL, no Redis, no Docker.
+
+### Test Suite (132 tests)
 
 | Module | Tests | Covers |
 |--------|-------|--------|
@@ -585,6 +612,7 @@ make locust-headless
 | `apps/core/tests/test_security.py` | 10 | InputValidator — XSS / SQLi |
 | `apps/core/tests/test_throttling.py` | 13 | AIAssistRateThrottle + BurstRateThrottle |
 | `apps/core/tests/test_events.py` | 6 | EventPublisher + Redis pub/sub |
+| `apps/core/tests/test_graphql.py` | 11 | Strawberry GraphQL queries + mutations |
 | `apps/core/tests/test_middleware.py` | 6 | Language resolution + request logging |
 | `apps/core/tests/test_performance.py` | 9 | QueryProfiler, batch updates, translations |
 | `apps/core/tests/test_management_commands.py` | 8 | seed_data, warm_cache, superuser |
@@ -592,7 +620,8 @@ make locust-headless
 | `apps/tasks/tests/test_api.py` | 13 | CRUD, multilingual, auth, isolation |
 | `apps/tasks/tests/test_cache.py` | 6 | Per-language caching + invalidation |
 | `apps/ai_assist/tests/test_ai_services.py` | 14 | JSON parsing, circuit breaker, injection |
-| `apps/analytics/tests/test_middleware.py` | 5 | RequestTimingMiddleware (0 DB queries) |
+| `apps/ai_assist/tests/test_views.py` | 9 | AI endpoint auth, security, happy path |
+| `apps/analytics/tests/test_middleware.py` | 3 | RequestTimingMiddleware (0 DB queries) |
 
 ### Test pyramid
 

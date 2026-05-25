@@ -97,6 +97,9 @@ class HealthCheckView(APIView):
                 "status": "ok",
                 "latency_ms": round((time.perf_counter() - start) * 1000.0, 2),
             }
+        except NotImplementedError:
+            # Cache backend has no native Redis connection (e.g. LocMemCache in tests).
+            return {"status": "unavailable", "error": "Non-Redis cache backend configured"}
         except RedisError as exc:
             return {"status": "down", "error": str(exc)}
 

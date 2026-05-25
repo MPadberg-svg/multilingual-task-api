@@ -53,10 +53,14 @@ class TestGraphQLQueries:
         user = await sync_to_async(User.objects.create_user)(
             email="gql_query@example.com", password="pass"
         )
-        task = await sync_to_async(Task.objects.create)(user=user, status="pending")
-        await sync_to_async(task.set_current_language)("en")
-        task.title = "GraphQL Test Task"
-        await sync_to_async(task.save)()
+        def _create_task_with_title(u):
+            t = Task.objects.create(user=u, status="pending")
+            t.set_current_language("en")
+            t.title = "GraphQL Test Task"
+            t.save()
+            return t
+
+        task = await sync_to_async(_create_task_with_title)(user)
 
         result = await _execute("{ tasks { id status } }", user=user)
         assert result.errors is None

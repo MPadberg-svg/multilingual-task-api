@@ -74,6 +74,9 @@ def suggest_task(request):
             user_id=str(request.user.id), lang=lang, user_input=description
         )
         return Response(result)
+    except ValueError as exc:
+        logger.warning("Input validation rejected: %s", exc)
+        return Response({"error": str(exc)}, status=400)
     except Exception as exc:
         logger.error("Translation failed: %s", exc)
         return Response(
@@ -120,7 +123,7 @@ def evaluate_quality(request):
     Returns:
         Response with score, improvements list, and analysis, or 400/502.
     """
-    prompt_text = request.data.get("prompt_text", "")
+    prompt_text = request.data.get("prompt_text") or request.data.get("prompt", "")
     lang = request.data.get("lang", "en")
 
     if not prompt_text or len(prompt_text.strip()) == 0:
@@ -179,7 +182,10 @@ def generate_test_cases(request):
     Returns:
         Response with instruction, input, output, and metadata, or 400/502.
     """
-    code_snippet = request.data.get("code_snippet", "")
+    code_snippet = (
+        request.data.get("code_snippet")
+        or request.data.get("task_description", "")
+    )
     lang = request.data.get("lang", "en")
 
     if not code_snippet or len(code_snippet.strip()) == 0:

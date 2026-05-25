@@ -48,6 +48,10 @@ test-cov:
 test-fast:
 	docker-compose exec api pytest -x -q --no-header
 
+# Run tests locally without Docker (uses SQLite via config.settings.testing)
+test-local:
+	pytest -x -q --no-header
+
 # ─── Load Testing ─────────────────────────────────────────────────────────────
 
 locust-benchmark:
