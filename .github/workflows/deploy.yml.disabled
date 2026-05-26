@@ -1,26 +1,10 @@
 name: Deploy to AWS ECS
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Triggered manually from GitHub Actions UI (Actions → Deploy to AWS ECS →
-# Run workflow). This keeps the workflow ready for production deployment
-# without failing on every push while AWS credentials are not yet configured.
-#
-# To enable automatic deployment once AWS is set up, replace `workflow_dispatch`
-# with:
-#   push:
-#     branches: [main, develop]
-# ─────────────────────────────────────────────────────────────────────────────
 on:
-  workflow_dispatch:
-    inputs:
-      environment:
-        description: "Target environment"
-        required: true
-        default: "staging"
-        type: choice
-        options:
-          - staging
-          - production
+  push:
+    branches:
+      - main
+      - develop
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
@@ -33,7 +17,24 @@ jobs:
   build:
     name: Build and Push Docker Image
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
     steps:
+      - name: Preflight check
+        run: |
+          missing=()
+          for var in AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SERVICE ECS_TASK_DEFINITION; do
+            val=$(printenv "$var")
+            if [ -z "$val" ]; then
+              missing+=("$var")
+            fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing required vars: ${missing[*]}"
+            echo "Please set them in Settings → Secrets and variables → Actions → Variables"
+            exit 1
+          fi
+
       - name: Checkout repository
         uses: actions/checkout@v4
 
@@ -48,6 +49,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build, tag, and push image to ECR
+        id: build-image
         env:
           IMAGE_TAG: ${{ github.sha }}
         run: |
@@ -55,13 +57,15 @@ jobs:
           docker tag $ECR_REPOSITORY:$IMAGE_TAG $ECR_REPOSITORY:latest
           docker push $ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REPOSITORY:latest
-          echo "image=$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "image=$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
 
   deploy-staging:
     name: Deploy to Staging
     needs: build
-    if: github.event.inputs.environment == 'staging'
+    if: github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -73,13 +77,22 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Run database migrations (before deploy)
+        run: |
+          aws ecs run-task \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --launch-type FARGATE \
+            --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides": [{"name": "api", "image": "${{ env.IMAGE }}", "command": ["python", "manage.py", "migrate"]}]}'
+
       - name: Render ECS task definition
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         id: render-task-def
         with:
           task-definition: ${{ env.ECS_TASK_DEFINITION }}
           container-name: api
-          image: ${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          image: ${{ env.IMAGE }}
 
       - name: Deploy ECS service
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
@@ -89,15 +102,6 @@ jobs:
           cluster: ${{ env.ECS_CLUSTER }}
           wait-for-service-stability: true
 
-      - name: Run database migrations
-        run: |
-          aws ecs run-task \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --launch-type FARGATE \
-            --task-definition ${{ env.ECS_TASK_DEFINITION }} \
-            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
-            --overrides '{"containerOverrides": [{"name": "api", "command": ["python", "manage.py", "migrate"]}]}'
-
       - name: Warm Redis cache
         run: |
           aws ecs run-task \
@@ -105,14 +109,16 @@ jobs:
             --launch-type FARGATE \
             --task-definition ${{ env.ECS_TASK_DEFINITION }} \
             --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
-            --overrides '{"containerOverrides": [{"name": "api", "command": ["python", "manage.py", "warm_cache", "--languages", "en", "es", "fr"]}]}'
+            --overrides '{"containerOverrides": [{"name": "api", "image": "${{ env.IMAGE }}", "command": ["python", "manage.py", "warm_cache", "--languages", "en", "es", "fr"]}]}'
 
   deploy-production:
     name: Deploy to Production
     needs: build
-    if: github.event.inputs.environment == 'production'
+    if: github.ref == 'refs/heads/main'
     environment: production
     runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -124,13 +130,22 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Run database migrations (before deploy)
+        run: |
+          aws ecs run-task \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --launch-type FARGATE \
+            --task-definition ${{ env.ECS_TASK_DEFINITION }} \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides": [{"name": "api", "image": "${{ env.IMAGE }}", "command": ["python", "manage.py", "migrate"]}]}'
+
       - name: Render ECS task definition
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         id: render-task-def
         with:
           task-definition: ${{ env.ECS_TASK_DEFINITION }}
           container-name: api
-          image: ${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          image: ${{ env.IMAGE }}
 
       - name: Deploy ECS service (blue/green)
         uses: aws-actions/amazon-ecs-deploy-task-definition@v1
@@ -143,15 +158,6 @@ jobs:
           codedeploy-application: multilingual-task-api-codedeploy
           codedeploy-deployment-group: multilingual-task-api-dg
 
-      - name: Run database migrations
-        run: |
-          aws ecs run-task \
-            --cluster ${{ env.ECS_CLUSTER }} \
-            --launch-type FARGATE \
-            --task-definition ${{ env.ECS_TASK_DEFINITION }} \
-            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
-            --overrides '{"containerOverrides": [{"name": "api", "command": ["python", "manage.py", "migrate"]}]}'
-
       - name: Warm Redis cache
         run: |
           aws ecs run-task \
@@ -159,7 +165,7 @@ jobs:
             --launch-type FARGATE \
             --task-definition ${{ env.ECS_TASK_DEFINITION }} \
             --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
-            --overrides '{"containerOverrides": [{"name": "api", "command": ["python", "manage.py", "warm_cache", "--languages", "en", "es", "fr"]}]}'
+            --overrides '{"containerOverrides": [{"name": "api", "image": "${{ env.IMAGE }}", "command": ["python", "manage.py", "warm_cache", "--languages", "en", "es", "fr"]}]}'
 
       - name: Verify healthcheck
         run: |
@@ -179,39 +185,19 @@ jobs:
           echo "Healthcheck failed after 10 attempts"
           exit 1
 
-      - name: Notify Slack on success
-        if: success()
+      - name: Notify Slack
+        if: always()
         uses: slackapi/slack-github-action@v1
         with:
           payload: |
             {
-              "text": "✅ Production deployment successful for multilingual-task-api",
+              "text": "${{ job.status == 'success' && '✅' || '❌' }} Production deployment ${{ job.status }} for multilingual-task-api",
               "blocks": [
                 {
                   "type": "section",
                   "text": {
                     "type": "mrkdwn",
-                    "text": "*Deployment Successful*\nCommit: ${{ github.sha }}\nBranch: ${{ github.ref }}"
-                  }
-                }
-              ]
-            }
-        env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
-
-      - name: Notify Slack on failure
-        if: failure()
-        uses: slackapi/slack-github-action@v1
-        with:
-          payload: |
-            {
-              "text": "❌ Production deployment FAILED for multilingual-task-api",
-              "blocks": [
-                {
-                  "type": "section",
-                  "text": {
-                    "type": "mrkdwn",
-                    "text": "*Deployment Failed*\nCommit: ${{ github.sha }}\nBranch: ${{ github.ref }}\nCheck logs for details."
+                    "text": "*Deployment ${{ job.status }}*\nCommit: ${{ github.sha }}\nBranch: ${{ github.ref }}"
                   }
                 }
               ]
