@@ -19,7 +19,6 @@ from django_redis import get_redis_connection
 logger = logging.getLogger(__name__)
 
 
-
 class _NullRedis:
     """Stub Redis client used when no Redis backend is available (e.g. tests)."""
 
