@@ -172,18 +172,13 @@ jobs:
         run: python manage.py migrate --noinput
       - name: Run full suite & live SKIP LOCKED / Redis 7 integration matrix
         run: |
-          pytest --ds=config.settings.ci_integration apps/ tests/integration/ --junitxml=/tmp/pg-junit.xml || {
-            python -c '
-          import xml.etree.ElementTree as ET
-          for tc in ET.parse("/tmp/pg-junit.xml").iter("testcase"):
-              for bad in list(tc.findall("failure")) + list(tc.findall("error")):
-                  title = f"{tc.attrib.get(\"classname\")}.{tc.attrib.get(\"name\")}"
-                  detail = ((bad.attrib.get("message") or "") + " " + (bad.text or "")).strip()
-                  detail = " | ".join(line.strip() for line in detail.splitlines()[-8:])[:600]
-                  print(f"::error title={title}::{detail}")
-          '
+          if ! pytest --ds=config.settings.ci_integration --reuse-db apps/ tests/integration/ > /tmp/pytest.log 2>&1; then
+            cat /tmp/pytest.log
+            SUMMARY=$(grep -E "^(FAILED|ERROR|E   )" /tmp/pytest.log | tail -n 15 | tr '\n' ' ' | cut -c1-800)
+            echo "::error::PG16/Redis7 pytest failure: ${SUMMARY:-$(tail -n 10 /tmp/pytest.log | tr '\n' ' ')}"
             exit 1
-          }
+          fi
+          cat /tmp/pytest.log
 
 
 
