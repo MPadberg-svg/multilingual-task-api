@@ -30,7 +30,7 @@
   }
   header {
     background: linear-gradient(135deg, var(--surface) 0%, var(--surface-2) 100%);
-    padding: 2rem 1.5rem;
+    padding: 1.5rem 2rem;
     border-bottom: 1px solid var(--border);
     display: flex;
     justify-content: space-between;
@@ -39,37 +39,61 @@
     gap: 1rem;
   }
   h1 {
-    font-size: 1.75rem;
+    font-size: 1.5rem;
     font-weight: 700;
     background: linear-gradient(90deg, var(--accent), var(--accent-2));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
   }
-  .lang-switcher {
+  .toolbar {
     display: flex;
-    gap: 0.5rem;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
   }
-  .lang-btn {
-    padding: 0.5rem 1rem;
+  .lang-switcher, .mode-switcher {
+    display: flex;
+    gap: 0.4rem;
+  }
+  .pill-btn {
+    padding: 0.45rem 0.9rem;
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text-muted);
     border-radius: var(--radius);
     cursor: pointer;
     transition: all 0.2s;
-    font-weight: 500;
+    font-weight: 600;
+    font-size: 0.82rem;
   }
-  .lang-btn:hover, .lang-btn.active {
+  .pill-btn:hover, .pill-btn.active {
     background: var(--accent);
     color: var(--bg);
     border-color: var(--accent);
   }
+  .auth-bar {
+    max-width: 1200px;
+    margin: 1.5rem auto 0;
+    padding: 0 1.5rem;
+    display: none;
+  }
+  .auth-bar.visible { display: block; }
+  .auth-grid {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.25rem;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 0.75rem;
+    align-items: end;
+  }
   main {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 2rem 1.5rem;
+    padding: 1.5rem;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
     gap: 1.5rem;
   }
   .card {
@@ -78,108 +102,86 @@
     border-radius: var(--radius);
     padding: 1.5rem;
     box-shadow: var(--shadow);
-    transition: transform 0.2s, box-shadow 0.2s;
-  }
-  .card:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 25px -5px rgba(0,0,0,0.4);
   }
   .card-header {
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    margin-bottom: 1rem;
+    margin-bottom: 0.75rem;
   }
   .method {
-    padding: 0.25rem 0.75rem;
+    padding: 0.25rem 0.65rem;
     border-radius: 6px;
-    font-size: 0.75rem;
+    font-size: 0.72rem;
     font-weight: 700;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
   }
   .method.get { background: var(--success); color: #fff; }
-  .method.post { background: var(--accent); color: #fff; }
+  .method.post { background: var(--accent); color: #0f172a; }
   .endpoint {
-    font-family: 'Fira Code', monospace;
-    font-size: 0.875rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.85rem;
     color: var(--accent);
+  }
+  label {
+    display: block;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+  }
+  textarea, input {
+    width: 100%;
+    padding: 0.65rem 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-family: inherit;
+    font-size: 0.85rem;
+  }
+  textarea { margin-top: 0.75rem; resize: vertical; }
+  textarea:focus, input:focus {
+    outline: 2px solid var(--accent);
+    border-color: transparent;
   }
   .btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 0.5rem;
-    padding: 0.75rem 1.5rem;
+    padding: 0.65rem 1.25rem;
     border: none;
-    border-radius: var(--radius);
+    border-radius: 8px;
     background: linear-gradient(135deg, var(--accent), var(--accent-2));
     color: #fff;
     font-weight: 600;
     cursor: pointer;
-    transition: all 0.3s;
-    position: relative;
-    overflow: hidden;
+    margin-top: 0.75rem;
   }
-  .btn:hover { transform: scale(1.02); }
-  .btn::after {
-    content: '';
-    position: absolute;
-    top: 0; left: -100%;
-    width: 100%; height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
-    transition: left 0.5s;
+  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+  .status-badge {
+    display: inline-block;
+    margin-top: 0.65rem;
+    padding: 0.2rem 0.65rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
   }
-  .btn:hover::after { left: 100%; }
-  .btn:active { transform: scale(0.98); }
+  .status-badge.ok { background: rgba(34,197,94,0.16); color: var(--success); }
+  .status-badge.err { background: rgba(239,68,68,0.16); color: var(--danger); }
   .response {
-    margin-top: 1rem;
+    margin-top: 0.75rem;
     background: var(--bg);
     border: 1px solid var(--border);
-    border-radius: var(--radius);
-    padding: 1rem;
-    font-family: 'Fira Code', monospace;
-    font-size: 0.8rem;
+    border-radius: 8px;
+    padding: 0.9rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.78rem;
     overflow-x: auto;
     white-space: pre-wrap;
     display: none;
   }
   .response.visible { display: block; }
-  .cache-hit {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.25rem 0.75rem;
-    background: rgba(34,197,94,0.15);
-    color: var(--success);
-    border-radius: 20px;
-    font-size: 0.75rem;
-    font-weight: 600;
-    margin-top: 0.5rem;
-    opacity: 0;
-    transition: opacity 0.3s;
-  }
-  .cache-hit.visible { opacity: 1; }
-  .cache-hit::before {
-    content: '';
-    width: 8px; height: 8px;
-    background: var(--success);
-    border-radius: 50%;
-    animation: pulse 1.5s infinite;
-  }
-  @keyframes pulse {
-    0%, 100% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.5); opacity: 0.5; }
-  }
-  .spinner {
-    width: 20px; height: 20px;
-    border: 2px solid rgba(255,255,255,0.3);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: spin 0.8s linear infinite;
-    display: none;
-  }
-  .spinner.visible { display: inline-block; }
-  @keyframes spin { to { transform: rotate(360deg); } }
   .score-bar {
     height: 8px;
     background: var(--surface-2);
@@ -191,58 +193,52 @@
     height: 100%;
     width: 0;
     background: linear-gradient(90deg, var(--success), var(--accent));
-    border-radius: 4px;
-    transition: width 1.5s ease-out;
+    transition: width 0.5s ease-out;
   }
-  textarea, input {
-    width: 100%;
-    padding: 0.75rem;
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: var(--radius);
-    color: var(--text);
-    font-family: inherit;
-    font-size: 0.875rem;
-    resize: vertical;
-    margin-top: 0.75rem;
-  }
-  textarea:focus, input:focus {
-    outline: none;
-    border-color: var(--accent);
-    box-shadow: 0 0 0 3px rgba(56,189,248,0.1);
-  }
-  .improvements {
-    margin-top: 1rem;
-    list-style: none;
-  }
-  .improvements li {
-    padding: 0.5rem 0;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-  }
-  .improvements li::before {
-    content: '→';
-    color: var(--accent);
-    font-weight: bold;
-  }
+  .improvements { margin-top: 0.75rem; list-style: none; font-size: 0.85rem; }
+  .improvements li { padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
   @media (max-width: 768px) {
     main { grid-template-columns: 1fr; }
-    header { flex-direction: column; text-align: center; }
+    header { flex-direction: column; align-items: flex-start; }
   }
 </style>
-<base target="_blank">
 </head>
 <body>
 <header>
   <h1 id="page-title">Multilingual Task API Explorer</h1>
-  <div class="lang-switcher">
-    <button class="lang-btn active" data-lang="en">EN</button>
-    <button class="lang-btn" data-lang="es">ES</button>
-    <button class="lang-btn" data-lang="fr">FR</button>
+  <div class="toolbar">
+    <div class="mode-switcher" role="group" aria-label="Execution Mode">
+      <button class="pill-btn active" id="mode-demo" type="button">Demo Mode</button>
+      <button class="pill-btn" id="mode-live" type="button">Live API</button>
+    </div>
+    <div class="lang-switcher" role="group" aria-label="Language">
+      <button class="pill-btn lang-btn active" data-lang="en" type="button">EN</button>
+      <button class="pill-btn lang-btn" data-lang="es" type="button">ES</button>
+      <button class="pill-btn lang-btn" data-lang="fr" type="button">FR</button>
+    </div>
   </div>
 </header>
+
+<section class="auth-bar" id="auth-bar" aria-label="Live API Authentication">
+  <div class="auth-grid">
+    <div>
+      <label for="auth-email">Email</label>
+      <input id="auth-email" type="email" placeholder="demo0@example.com" autocomplete="username">
+    </div>
+    <div>
+      <label for="auth-password">Password</label>
+      <input id="auth-password" type="password" placeholder="••••••••" autocomplete="current-password">
+    </div>
+    <div>
+      <label for="auth-org">X-Organization-ID (optional UUID)</label>
+      <input id="auth-org" type="text" placeholder="Optional tenant UUID">
+    </div>
+    <div>
+      <button class="btn" id="btn-login" type="button" style="margin-top:0;width:100%;">Authenticate JWT</button>
+      <div id="auth-status" class="status-badge ok" style="display:none;"></div>
+    </div>
+  </div>
+</section>
 
 <main>
   <div class="card">
@@ -250,13 +246,23 @@
       <span class="method get">GET</span>
       <span class="endpoint">/api/v1/tasks/</span>
     </div>
-    <p id="list-desc">List all tasks with Redis caching (5min TTL)</p>
-    <button class="btn" id="btn-list">
-      <span id="btn-list-text">Send Request</span>
-      <div class="spinner" id="spinner-list"></div>
-    </button>
-    <div class="cache-hit" id="cache-list">Cache Hit</div>
-    <div class="response" id="resp-list"></div>
+    <p id="list-desc">List paginated tasks with language-scoped Redis caching</p>
+    <button class="btn" id="btn-list" type="button">Send Request</button>
+    <div id="badge-list" class="status-badge ok" style="display:none;"></div>
+    <pre class="response" id="resp-list" aria-live="polite"></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="method post">POST</span>
+      <span class="endpoint">/api/v1/tasks/</span>
+    </div>
+    <p id="create-desc">Create a multilingual task in the active language</p>
+    <input id="task-title" type="text" placeholder="Task title..." style="margin-top:0.75rem;">
+    <textarea id="task-desc" rows="2" placeholder="Task description..."></textarea>
+    <button class="btn" id="btn-create" type="button">Create Task</button>
+    <div id="badge-create" class="status-badge ok" style="display:none;"></div>
+    <pre class="response" id="resp-create" aria-live="polite"></pre>
   </div>
 
   <div class="card">
@@ -264,13 +270,11 @@
       <span class="method post">POST</span>
       <span class="endpoint">/api/v1/ai/suggest-task/</span>
     </div>
-    <p id="ai-desc">Generate AI-powered translations for a task description</p>
+    <p id="ai-desc">Generate formal EN / ES / FR translations via OpenAI</p>
     <textarea id="ai-input" rows="3" placeholder="Enter task description..."></textarea>
-    <button class="btn" id="btn-ai" style="margin-top:0.75rem;">
-      <span id="btn-ai-text">Generate</span>
-      <div class="spinner" id="spinner-ai"></div>
-    </button>
-    <div class="response" id="resp-ai"></div>
+    <button class="btn" id="btn-ai" type="button">Generate</button>
+    <div id="badge-ai" class="status-badge ok" style="display:none;"></div>
+    <pre class="response" id="resp-ai" aria-live="polite"></pre>
   </div>
 
   <div class="card">
@@ -278,15 +282,13 @@
       <span class="method post">POST</span>
       <span class="endpoint">/api/v1/ai/evaluate-quality/</span>
     </div>
-    <p id="eval-desc">Evaluate prompt quality with AI scoring</p>
-    <input id="eval-input" type="text" placeholder="Enter prompt text...">
-    <button class="btn" id="btn-eval" style="margin-top:0.75rem;">
-      <span id="btn-eval-text">Evaluate</span>
-      <div class="spinner" id="spinner-eval"></div>
-    </button>
+    <p id="eval-desc">Evaluate prompt clarity, constraints, and edge cases</p>
+    <input id="eval-input" type="text" placeholder="Enter prompt text..." style="margin-top:0.75rem;">
+    <button class="btn" id="btn-eval" type="button">Evaluate</button>
     <div class="score-bar"><div class="score-fill" id="score-fill"></div></div>
     <ul class="improvements" id="improvements"></ul>
-    <div class="response" id="resp-eval"></div>
+    <div id="badge-eval" class="status-badge ok" style="display:none;"></div>
+    <pre class="response" id="resp-eval" aria-live="polite"></pre>
   </div>
 </main>
 
@@ -294,178 +296,238 @@
   const i18n = {
     en: {
       title: "Multilingual Task API Explorer",
-      listDesc: "List all tasks with Redis caching (5min TTL)",
-      btnList: "Send Request",
-      aiDesc: "Generate AI-powered translations for a task description",
-      aiPlaceholder: "Enter task description...",
-      btnAi: "Generate",
-      evalDesc: "Evaluate prompt quality with AI scoring",
-      evalPlaceholder: "Enter prompt text...",
-      btnEval: "Evaluate",
-      cacheHit: "Cache Hit",
+      listDesc: "List paginated tasks with language-scoped Redis caching",
+      createDesc: "Create a multilingual task in the active language",
+      aiDesc: "Generate formal EN / ES / FR translations via OpenAI",
+      evalDesc: "Evaluate prompt clarity, constraints, and edge cases",
       mockTasks: [
-        {id:"a1b2c3d4", title:"Review dataset annotations", status:"pending", user:"demo0"},
-        {id:"e5f6g7h8", title:"Train classification model", status:"in_progress", user:"demo1"},
-        {id:"i9j0k1l2", title:"Validate test results", status:"completed", user:"demo2"}
+        {id: "a1b2c3d4", title: "Review dataset annotations", status: "pending", language: "en"},
+        {id: "e5f6g7h8", title: "Audit RLHF safety rubrics", status: "in_progress", language: "en"}
       ],
-      aiResponse: {en:"Review dataset annotations", es:"Revisar anotaciones del dataset", fr:"Revoir les annotations du dataset"},
-      improvements: ["Add specific examples","Include error handling","Specify output format"]
+      improvements: ["Specify output JSON constraints", "Define edge-case handling rules"]
     },
     es: {
       title: "Explorador de API de Tareas Multilingües",
-      listDesc: "Listar todas las tareas con caché Redis (TTL 5min)",
-      btnList: "Enviar Petición",
-      aiDesc: "Generar traducciones con IA para una descripción de tarea",
-      aiPlaceholder: "Ingrese descripción de la tarea...",
-      btnAi: "Generar",
-      evalDesc: "Evaluar calidad del prompt con puntuación IA",
-      evalPlaceholder: "Ingrese texto del prompt...",
-      btnEval: "Evaluar",
-      cacheHit: "Caché Activado",
+      listDesc: "Listar tareas paginadas con caché Redis por idioma",
+      createDesc: "Crear una tarea multilingüe en el idioma activo",
+      aiDesc: "Generar traducciones formales EN / ES / FR con OpenAI",
+      evalDesc: "Evaluar claridad, restricciones y casos límite del prompt",
       mockTasks: [
-        {id:"a1b2c3d4", title:"Revisar anotaciones del dataset", status:"pending", user:"demo0"},
-        {id:"e5f6g7h8", title:"Entrenar modelo de clasificación", status:"in_progress", user:"demo1"},
-        {id:"i9j0k1l2", title:"Validar resultados de prueba", status:"completed", user:"demo2"}
+        {id: "a1b2c3d4", title: "Revisar anotaciones del dataset", status: "pending", language: "es"},
+        {id: "e5f6g7h8", title: "Auditar rúbricas de seguridad RLHF", status: "in_progress", language: "es"}
       ],
-      aiResponse: {en:"Review dataset annotations", es:"Revisar anotaciones del dataset", fr:"Revoir les annotations du dataset"},
-      improvements: ["Agregar ejemplos específicos","Incluir manejo de errores","Especificar formato de salida"]
+      improvements: ["Especificar restricciones del esquema JSON", "Definir reglas para casos límite"]
     },
     fr: {
       title: "Explorateur API de Tâches Multilingues",
-      listDesc: "Lister toutes les tâches avec cache Redis (TTL 5min)",
-      btnList: "Envoyer la Requête",
-      aiDesc: "Générer des traductions IA pour une description de tâche",
-      aiPlaceholder: "Entrez la description de la tâche...",
-      btnAi: "Générer",
-      evalDesc: "Évaluer la qualité du prompt avec score IA",
-      evalPlaceholder: "Entrez le texte du prompt...",
-      btnEval: "Évaluer",
-      cacheHit: "Cache Activé",
+      listDesc: "Lister les tâches paginées avec cache Redis par langue",
+      createDesc: "Créer une tâche multilingue dans la langue active",
+      aiDesc: "Générer des traductions formelles EN / ES / FR via OpenAI",
+      evalDesc: "Évaluer la clarté, les contraintes et les cas limites",
       mockTasks: [
-        {id:"a1b2c3d4", title:"Revoir les annotations du dataset", status:"pending", user:"demo0"},
-        {id:"e5f6g7h8", title:"Entraîner le modèle de classification", status:"in_progress", user:"demo1"},
-        {id:"i9j0k1l2", title:"Valider les résultats de test", status:"completed", user:"demo2"}
+        {id: "a1b2c3d4", title: "Revoir les annotations du dataset", status: "pending", language: "fr"},
+        {id: "e5f6g7h8", title: "Auditer les grilles de sécurité RLHF", status: "in_progress", language: "fr"}
       ],
-      aiResponse: {en:"Review dataset annotations", es:"Revisar anotaciones del dataset", fr:"Revoir les annotations du dataset"},
-      improvements: ["Ajouter des exemples spécifiques","Inclure la gestion d'erreurs","Spécifier le format de sortie"]
+      improvements: ["Spécifier les contraintes du format JSON", "Définir la gestion des cas limites"]
     }
   };
 
-  let currentLang = 'en';
+  let currentLang = "en";
+  let liveMode = false;
+  let accessToken = "";
+
+  function showResult(respId, badgeId, ok, label, payload) {
+    const pre = document.getElementById(respId);
+    const badge = document.getElementById(badgeId);
+    badge.style.display = "inline-block";
+    badge.className = "status-badge " + (ok ? "ok" : "err");
+    badge.textContent = label;
+    pre.textContent = JSON.stringify(payload, null, 2);
+    pre.classList.add("visible");
+  }
+
+  function buildHeaders() {
+    const headers = {
+      "Content-Type": "application/json",
+      "Accept-Language": currentLang
+    };
+    if (accessToken) {
+      headers["Authorization"] = "Bearer " + accessToken;
+    }
+    const orgId = document.getElementById("auth-org").value.trim();
+    if (orgId) {
+      headers["X-Organization-ID"] = orgId;
+    }
+    return headers;
+  }
+
+  async function apiRequest(path, options, respId, badgeId) {
+    try {
+      // Relative URLs ensure compatibility behind reverse proxies and cloud previews
+      const res = await fetch(path, options);
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch { data = {raw: text}; }
+      const timing = res.headers.get("X-Response-Time");
+      const label = "HTTP " + res.status + (timing ? " · " + timing + " ms" : "");
+      showResult(respId, badgeId, res.ok, label, data);
+      return {ok: res.ok, data};
+    } catch (err) {
+      showResult(respId, badgeId, false, "Network Error", {error: String(err)});
+      return {ok: false, data: null};
+    }
+  }
 
   function setLanguage(lang) {
     currentLang = lang;
-    document.querySelectorAll('.lang-btn').forEach(b => b.classList.toggle('active', b.dataset.lang === lang));
+    document.querySelectorAll(".lang-btn").forEach(b => b.classList.toggle("active", b.dataset.lang === lang));
     const t = i18n[lang];
-    document.getElementById('page-title').textContent = t.title;
-    document.getElementById('list-desc').textContent = t.listDesc;
-    document.getElementById('btn-list-text').textContent = t.btnList;
-    document.getElementById('ai-desc').textContent = t.aiDesc;
-    document.getElementById('ai-input').placeholder = t.aiPlaceholder;
-    document.getElementById('btn-ai-text').textContent = t.btnAi;
-    document.getElementById('eval-desc').textContent = t.evalDesc;
-    document.getElementById('eval-input').placeholder = t.evalPlaceholder;
-    document.getElementById('btn-eval-text').textContent = t.btnEval;
-    document.getElementById('cache-list').textContent = t.cacheHit;
-    // Refresh visible responses
-    const listResp = document.getElementById('resp-list');
-    if(listResp.classList.contains('visible')) renderList();
-    const aiResp = document.getElementById('resp-ai');
-    if(aiResp.classList.contains('visible')) renderAi();
-    const evalResp = document.getElementById('resp-eval');
-    if(evalResp.classList.contains('visible')) renderEval();
+    document.getElementById("page-title").textContent = t.title;
+    document.getElementById("list-desc").textContent = t.listDesc;
+    document.getElementById("create-desc").textContent = t.createDesc;
+    document.getElementById("ai-desc").textContent = t.aiDesc;
+    document.getElementById("eval-desc").textContent = t.evalDesc;
   }
 
-  document.querySelectorAll('.lang-btn').forEach(btn => {
-    btn.addEventListener('click', () => setLanguage(btn.dataset.lang));
+  document.querySelectorAll(".lang-btn").forEach(btn => {
+    btn.addEventListener("click", () => setLanguage(btn.dataset.lang));
   });
 
-  function renderList() {
-    const t = i18n[currentLang];
-    const tasks = t.mockTasks.map(task => ({
-      id: task.id,
-      title: task.title,
-      status: task.status,
-      user_id: task.user,
-      created_at: new Date().toISOString()
-    }));
-    document.getElementById('resp-list').textContent = JSON.stringify({count:3, results:tasks, cached:true}, null, 2);
-  }
-
-  document.getElementById('btn-list').addEventListener('click', () => {
-    const spinner = document.getElementById('spinner-list');
-    const resp = document.getElementById('resp-list');
-    const cache = document.getElementById('cache-list');
-    spinner.classList.add('visible');
-    resp.classList.remove('visible');
-    cache.classList.remove('visible');
-    setTimeout(() => {
-      spinner.classList.remove('visible');
-      renderList();
-      resp.classList.add('visible');
-      cache.classList.add('visible');
-    }, 600);
+  document.getElementById("mode-demo").addEventListener("click", () => {
+    liveMode = false;
+    document.getElementById("mode-demo").classList.add("active");
+    document.getElementById("mode-live").classList.remove("active");
+    document.getElementById("auth-bar").classList.remove("visible");
   });
 
-  function renderAi() {
-    const t = i18n[currentLang];
-    const input = document.getElementById('ai-input').value || t.mockTasks[0].title;
-    document.getElementById('resp-ai').textContent = JSON.stringify({
-      input: input,
-      translations: t.aiResponse,
-      confidence: 0.94,
-      model: "gpt-4o",
-      cached: false
-    }, null, 2);
-  }
-
-  document.getElementById('btn-ai').addEventListener('click', () => {
-    const spinner = document.getElementById('spinner-ai');
-    const resp = document.getElementById('resp-ai');
-    spinner.classList.add('visible');
-    resp.classList.remove('visible');
-    setTimeout(() => {
-      spinner.classList.remove('visible');
-      renderAi();
-      resp.classList.add('visible');
-    }, 1200);
+  document.getElementById("mode-live").addEventListener("click", () => {
+    liveMode = true;
+    document.getElementById("mode-live").classList.add("active");
+    document.getElementById("mode-demo").classList.remove("active");
+    document.getElementById("auth-bar").classList.add("visible");
   });
 
-  function renderEval() {
-    const t = i18n[currentLang];
-    const input = document.getElementById('eval-input').value || "Translate this task";
-    document.getElementById('resp-eval').textContent = JSON.stringify({
-      prompt: input,
-      score: 85,
-      max_score: 100,
-      model: "gpt-4o",
-      cached: false
-    }, null, 2);
-    document.getElementById('score-fill').style.width = '85%';
-    const ul = document.getElementById('improvements');
-    ul.innerHTML = '';
-    t.improvements.forEach(item => {
-      const li = document.createElement('li');
-      li.textContent = item;
-      ul.appendChild(li);
-    });
-  }
-
-  document.getElementById('btn-eval').addEventListener('click', () => {
-    const spinner = document.getElementById('spinner-eval');
-    const resp = document.getElementById('resp-eval');
-    const score = document.getElementById('score-fill');
-    spinner.classList.add('visible');
-    resp.classList.remove('visible');
-    score.style.width = '0%';
-    setTimeout(() => {
-      spinner.classList.remove('visible');
-      renderEval();
-      resp.classList.add('visible');
-    }, 1500);
+  document.getElementById("btn-login").addEventListener("click", async () => {
+    const email = document.getElementById("auth-email").value.trim();
+    const password = document.getElementById("auth-password").value;
+    const statusEl = document.getElementById("auth-status");
+    try {
+      const res = await fetch("/api/v1/auth/token/", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({email, password})
+      });
+      const data = await res.json();
+      statusEl.style.display = "inline-block";
+      if (res.ok && data.access) {
+        accessToken = data.access;
+        statusEl.className = "status-badge ok";
+        statusEl.textContent = "JWT Active";
+      } else {
+        statusEl.className = "status-badge err";
+        statusEl.textContent = "Auth Failed (" + res.status + ")";
+      }
+    } catch {
+      statusEl.style.display = "inline-block";
+      statusEl.className = "status-badge err";
+      statusEl.textContent = "API Unreachable";
+    }
   });
 
-  setLanguage('en');
+  document.getElementById("btn-list").addEventListener("click", async () => {
+    if (!liveMode) {
+      const t = i18n[currentLang];
+      showResult("resp-list", "badge-list", true, "Demo · Cache Hit (12ms)", {
+        count: t.mockTasks.length,
+        next: null,
+        previous: null,
+        results: t.mockTasks
+      });
+      return;
+    }
+    await apiRequest("/api/v1/tasks/?lang=" + encodeURIComponent(currentLang), {
+      method: "GET",
+      headers: buildHeaders()
+    }, "resp-list", "badge-list");
+  });
+
+  document.getElementById("btn-create").addEventListener("click", async () => {
+    const title = document.getElementById("task-title").value.trim() || "Annotation quality review";
+    const description = document.getElementById("task-desc").value.trim();
+    const payload = {
+      translations: {[currentLang]: {title, description}},
+      status: "pending"
+    };
+    if (!liveMode) {
+      showResult("resp-create", "badge-create", true, "Demo · HTTP 201", {
+        id: "demo-created-uuid",
+        title,
+        description,
+        translations: payload.translations,
+        language: currentLang,
+        status: "pending"
+      });
+      return;
+    }
+    await apiRequest("/api/v1/tasks/", {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify(payload)
+    }, "resp-create", "badge-create");
+  });
+
+  document.getElementById("btn-ai").addEventListener("click", async () => {
+    const description = document.getElementById("ai-input").value.trim() || "Review RLHF dataset annotations";
+    if (!liveMode) {
+      showResult("resp-ai", "badge-ai", true, "Demo · HTTP 200", {
+        en: {title: description, description: "Formal English task specification."},
+        es: {title: "Revisar anotaciones RLHF", description: "Especificación formal en español."},
+        fr: {title: "Examiner les annotations RLHF", description: "Spécification formelle en français."}
+      });
+      return;
+    }
+    await apiRequest("/api/v1/ai/suggest-task/", {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify({description, lang: currentLang})
+    }, "resp-ai", "badge-ai");
+  });
+
+  document.getElementById("btn-eval").addEventListener("click", async () => {
+    const prompt_text = document.getElementById("eval-input").value.trim() || "Classify sentiment as positive or negative.";
+    if (!liveMode) {
+      const t = i18n[currentLang];
+      document.getElementById("score-fill").style.width = "86%";
+      const ul = document.getElementById("improvements");
+      ul.innerHTML = "";
+      t.improvements.forEach(item => {
+        const li = document.createElement("li");
+        li.textContent = "→ " + item;
+        ul.appendChild(li);
+      });
+      showResult("resp-eval", "badge-eval", true, "Demo · HTTP 200", {
+        score: 86,
+        improvements: t.improvements,
+        analysis: "Clear baseline prompt; add explicit boundary conditions."
+      });
+      return;
+    }
+    const {ok, data} = await apiRequest("/api/v1/ai/evaluate-quality/", {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify({prompt_text, lang: currentLang})
+    }, "resp-eval", "badge-eval");
+    if (ok && data && typeof data.score === "number") {
+      document.getElementById("score-fill").style.width = Math.min(100, Math.max(0, data.score)) + "%";
+      const ul = document.getElementById("improvements");
+      ul.innerHTML = "";
+      (data.improvements || []).forEach(item => {
+        const li = document.createElement("li");
+        li.textContent = "→ " + String(item);
+        ul.appendChild(li);
+      });
+    }
+  });
 </script>
 </body>
 </html>

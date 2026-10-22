@@ -10,6 +10,36 @@ variable "environment" {
   description = "staging or production"
 }
 
+variable "image_tag" {
+  description = "Immutable container image tag (e.g. git SHA)"
+  default     = "v1.0.0"
+}
+
+variable "domain_name" {
+  description = "Primary API hostname for ALLOWED_HOSTS"
+  default     = ""
+}
+
+variable "acm_certificate_arn" {
+  description = "Optional ACM certificate ARN for HTTPS ALB listener"
+  default     = ""
+}
+
+variable "django_secret_key_arn" {
+  description = "Secrets Manager / SSM Parameter ARN for Django SECRET_KEY"
+  default     = ""
+}
+
+variable "db_password_secret_arn" {
+  description = "Secrets Manager / SSM Parameter ARN for POSTGRES_PASSWORD"
+  default     = ""
+}
+
+variable "openai_api_key_secret_arn" {
+  description = "Secrets Manager / SSM Parameter ARN for OPENAI_API_KEY"
+  default     = ""
+}
+
 variable "vpc_cidr" {
   default = "10.0.0.0/16"
 }

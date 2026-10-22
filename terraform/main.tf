@@ -1,4 +1,6 @@
 terraform {
+  required_version = ">= 1.5.0"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -91,7 +93,6 @@ resource "aws_security_group" "rds" {
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs.id]
   }
-  # No egress: managed RDS does not initiate outbound traffic to workloads.
 }
 
 resource "aws_security_group" "redis" {
@@ -104,7 +105,6 @@ resource "aws_security_group" "redis" {
     protocol        = "tcp"
     security_groups = [aws_security_group.ecs.id]
   }
-  # No egress: ElastiCache nodes do not initiate outbound traffic.
 }
 
 resource "aws_db_subnet_group" "main" {
@@ -135,8 +135,11 @@ resource "aws_db_instance" "postgres" {
   vpc_security_group_ids = [aws_security_group.rds.id]
   db_subnet_group_name   = aws_db_subnet_group.main.name
 
-  multi_az = var.environment == "production"
-
+  multi_az                    = var.environment == "production"
+  deletion_protection         = var.environment == "production"
+  skip_final_snapshot         = var.environment != "production"
+  final_snapshot_identifier   = var.environment == "production" ? "${var.project_name}-final-snapshot" : null
+  copy_tags_to_snapshot       = true
   backup_retention_period     = 7
   performance_insights_enabled = true
 
@@ -149,15 +152,15 @@ resource "aws_elasticache_replication_group" "redis" {
 
   node_type = var.redis_node_type
 
-  num_cache_clusters      = var.environment == "production" ? 2 : 1
+  num_cache_clusters         = var.environment == "production" ? 2 : 1
   automatic_failover_enabled = var.environment == "production"
 
   engine         = "redis"
   engine_version = "7.0"
   port           = 6379
 
-  at_rest_encryption_enabled  = true
-  transit_encryption_enabled    = true
+  at_rest_encryption_enabled = true
+  transit_encryption_enabled = true
 
   security_group_ids = [aws_security_group.redis.id]
   subnet_group_name  = aws_elasticache_subnet_group.main.name
@@ -166,11 +169,12 @@ resource "aws_elasticache_replication_group" "redis" {
 }
 
 resource "aws_lb" "main" {
-  name               = "${var.project_name}-alb"
-  internal           = false
-  load_balancer_type = "application"
-  security_groups    = [aws_security_group.alb.id]
-  subnets            = module.vpc.public_subnets
+  name                       = "${var.project_name}-alb"
+  internal                   = false
+  load_balancer_type         = "application"
+  drop_invalid_header_fields = true
+  security_groups            = [aws_security_group.alb.id]
+  subnets                    = module.vpc.public_subnets
 
   tags = var.common_tags
 }
@@ -199,6 +203,35 @@ resource "aws_lb_listener" "http" {
   port              = 80
   protocol          = "HTTP"
 
+  dynamic "default_action" {
+    for_each = var.acm_certificate_arn != "" ? [1] : []
+    content {
+      type = "redirect"
+      redirect {
+        port        = "443"
+        protocol    = "HTTPS"
+        status_code = "HTTP_301"
+      }
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = var.acm_certificate_arn == "" ? [1] : []
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.api.arn
+    }
+  }
+}
+
+resource "aws_lb_listener" "https" {
+  count             = var.acm_certificate_arn != "" ? 1 : 0
+  load_balancer_arn = aws_lb.main.arn
+  port              = 443
+  protocol          = "HTTPS"
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  certificate_arn   = var.acm_certificate_arn
+
   default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.api.arn
@@ -225,11 +258,47 @@ resource "aws_iam_role_policy_attachment" "ecs_task_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
 }
 
+resource "aws_iam_role" "ecs_task" {
+  name = "${var.project_name}-ecs-task"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "ecs-tasks.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+
+  tags = var.common_tags
+}
+
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/ecs/${var.project_name}-api"
   retention_in_days = 30
 
   tags = var.common_tags
+}
+
+locals {
+  redis_tls_base_url = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+  shared_env = [
+    { name = "DJANGO_SETTINGS_MODULE", value = "config.settings.production" },
+    { name = "ALLOWED_HOSTS", value = join(",", compact([var.domain_name, aws_lb.main.dns_name])) },
+    { name = "POSTGRES_DB", value = var.db_name },
+    { name = "POSTGRES_USER", value = var.db_username },
+    { name = "POSTGRES_HOST", value = aws_db_instance.postgres.address },
+    { name = "POSTGRES_PORT", value = "5432" },
+    { name = "REDIS_URL", value = "${local.redis_tls_base_url}/0" },
+    { name = "CELERY_BROKER_URL", value = "${local.redis_tls_base_url}/1" },
+    { name = "CELERY_RESULT_BACKEND", value = "${local.redis_tls_base_url}/2" },
+    { name = "TRUSTED_PROXY_COUNT", value = "2" },
+  ]
+  shared_secrets = compact([
+    var.django_secret_key_arn != "" ? jsonencode({ name = "SECRET_KEY", valueFrom = var.django_secret_key_arn }) : "",
+    var.db_password_secret_arn != "" ? jsonencode({ name = "POSTGRES_PASSWORD", valueFrom = var.db_password_secret_arn }) : "",
+    var.openai_api_key_secret_arn != "" ? jsonencode({ name = "OPENAI_API_KEY", valueFrom = var.openai_api_key_secret_arn }) : "",
+  ])
 }
 
 resource "aws_ecs_task_definition" "api" {
@@ -239,24 +308,57 @@ resource "aws_ecs_task_definition" "api" {
   cpu                      = var.ecs_task_cpu
   memory                   = var.ecs_task_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
 
   container_definitions = jsonencode([{
     name      = "api"
-    image     = "${aws_ecr_repository.api.repository_url}:latest"
+    image     = "${aws_ecr_repository.api.repository_url}:${var.image_tag}"
     essential = true
     portMappings = [{
       containerPort = 8000
       protocol      = "tcp"
     }]
-    environment = [
-      { name = "DJANGO_SETTINGS_MODULE", value = "config.settings.production" },
-    ]
+    environment = local.shared_env
+    secrets     = [for s in local.shared_secrets : jsondecode(s)]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
         awslogs-group         = aws_cloudwatch_log_group.api.name
         awslogs-region        = var.aws_region
         awslogs-stream-prefix = "api"
+      }
+    }
+  }])
+
+  tags = var.common_tags
+}
+
+resource "aws_ecs_task_definition" "celery_worker" {
+  family                   = "${var.project_name}-celery-worker"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.ecs_task_cpu
+  memory                   = var.ecs_task_memory
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "celery-worker"
+    image     = "${aws_ecr_repository.api.repository_url}:${var.image_tag}"
+    essential = true
+    command = [
+      "celery", "-A", "config.celery", "worker",
+      "--loglevel=info", "--concurrency=4",
+      "--queues=celery,default,tasks,ai"
+    ]
+    environment = local.shared_env
+    secrets     = [for s in local.shared_secrets : jsondecode(s)]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.api.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "celery-worker"
       }
     }
   }])
@@ -290,11 +392,28 @@ resource "aws_ecs_service" "api" {
   load_balancer {
     target_group_arn = aws_lb_target_group.api.arn
     container_name   = "api"
-    container_port     = 8000
+    container_port   = 8000
   }
 
   deployment_controller {
     type = "ECS"
+  }
+
+  tags = var.common_tags
+}
+
+resource "aws_ecs_service" "celery_worker" {
+  name            = "${var.project_name}-celery-worker"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.celery_worker.arn
+
+  desired_count = 1
+  launch_type   = "FARGATE"
+
+  network_configuration {
+    subnets          = module.vpc.private_subnets
+    security_groups  = [aws_security_group.ecs.id]
+    assign_public_ip = false
   }
 
   tags = var.common_tags
@@ -324,7 +443,8 @@ resource "aws_appautoscaling_policy" "cpu" {
 }
 
 resource "aws_ecr_repository" "api" {
-  name = "${var.project_name}-api"
+  name                 = "${var.project_name}-api"
+  image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {
     scan_on_push = true
@@ -332,25 +452,47 @@ resource "aws_ecr_repository" "api" {
 }
 
 resource "aws_cloudfront_distribution" "cdn" {
-  enabled             = true
-  is_ipv6_enabled     = true
+  enabled         = true
+  is_ipv6_enabled = true
 
+  origin {
+    domain_name = aws_lb.main.dns_name
+    origin_id   = "ALB"
+
+    custom_origin_config {
+      http_port              = 80
+      https_port             = 443
+      origin_protocol_policy = var.acm_certificate_arn != "" ? "https-only" : "http-only"
+      origin_ssl_protocols   = ["TLSv1.2"]
+    }
+  }
+
+  # Dynamic API behavior: forward all methods, auth/tenant/lang headers, and
+  # query strings with 0 TTL at the CDN edge so private user/tenant responses
+  # are never cached publicly across callers (application-level caching runs in Redis).
   default_cache_behavior {
-    allowed_methods  = ["GET", "HEAD", "OPTIONS"]
+    allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
     cached_methods   = ["GET", "HEAD"]
     target_origin_id = "ALB"
 
     forwarded_values {
-      query_string = false
+      query_string = true
+      headers = [
+        "Authorization",
+        "Accept-Language",
+        "X-Organization-ID",
+        "X-Correlation-Id",
+        "Origin",
+      ]
       cookies {
-        forward = "none"
+        forward = "all"
       }
     }
 
     viewer_protocol_policy = "redirect-to-https"
     min_ttl                = 0
-    default_ttl            = 3600
-    max_ttl                = 86400
+    default_ttl            = 0
+    max_ttl                = 0
   }
 
   restrictions {
@@ -362,4 +504,6 @@ resource "aws_cloudfront_distribution" "cdn" {
   viewer_certificate {
     cloudfront_default_certificate = true
   }
+
+  tags = var.common_tags
 }
