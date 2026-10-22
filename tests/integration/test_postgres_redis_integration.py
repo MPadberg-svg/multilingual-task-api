@@ -256,7 +256,7 @@ async def test_live_redis_pubsub_and_channels_redis_websocket_broadcast() -> Non
     """
     EventPublisher._instance = None
     raw_redis = get_redis_connection("default")
-    pubsub = raw_redis.pubsub(ignore_subscribe_messages=True)
+    pubsub = raw_redis.pubsub()
 
     user = await sync_to_async(User.objects.create_user)(
         email="ws-redis-live@example.com",
@@ -275,6 +275,12 @@ async def test_live_redis_pubsub_and_channels_redis_websocket_broadcast() -> Non
     channel_name = f"mltask:events:{org.id}:tasks"
     pubsub.subscribe(channel_name)
     try:
+        # Wait for explicit SUBSCRIBE ack on this socket before publishing on another connection
+        for _ in range(10):
+            ack = pubsub.get_message(timeout=0.2)
+            if ack and ack.get("type") == "subscribe":
+                break
+
         # Trigger EventPublisher -> real Redis PUBLISH
         await sync_to_async(EventPublisher().publish_task_event)(
             str(org.id),
@@ -282,9 +288,10 @@ async def test_live_redis_pubsub_and_channels_redis_websocket_broadcast() -> Non
             {"id": "11111111-1111-1111-1111-111111111111", "user_id": str(user.id)},
         )
         msg = None
-        for _ in range(10):
-            msg = pubsub.get_message(timeout=0.2)
-            if msg and msg.get("type") == "message":
+        for _ in range(15):
+            candidate = pubsub.get_message(timeout=0.2)
+            if candidate and candidate.get("type") == "message":
+                msg = candidate
                 break
         assert msg is not None
         decoded = json.loads(

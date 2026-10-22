@@ -171,7 +171,19 @@ jobs:
       - name: Verify migrations apply cleanly on PostgreSQL 16
         run: python manage.py migrate --noinput
       - name: Run full suite & live SKIP LOCKED / Redis 7 integration matrix
-        run: pytest --ds=config.settings.ci_integration apps/ tests/integration/
+        run: |
+          pytest --ds=config.settings.ci_integration apps/ tests/integration/ --junitxml=/tmp/pg-junit.xml || {
+            python -c '
+          import xml.etree.ElementTree as ET
+          for tc in ET.parse("/tmp/pg-junit.xml").iter("testcase"):
+              for bad in list(tc.findall("failure")) + list(tc.findall("error")):
+                  title = f"{tc.attrib.get(\"classname\")}.{tc.attrib.get(\"name\")}"
+                  detail = ((bad.attrib.get("message") or "") + " " + (bad.text or "")).strip()
+                  detail = " | ".join(line.strip() for line in detail.splitlines()[-8:])[:600]
+                  print(f"::error title={title}::{detail}")
+          '
+            exit 1
+          }
 
 
 
