@@ -1,8 +1,10 @@
 """Integration tests for AI Assist API endpoints."""
 
-import pytest
 from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
+
+import pytest
 from rest_framework.test import APIClient
 
 User = get_user_model()
