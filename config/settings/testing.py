@@ -6,7 +6,11 @@ so the full test suite can run without Docker or any running infrastructure.
 
 from __future__ import annotations
 
-from .base import *  # noqa: F401,F403
+import os
+
+os.environ.setdefault("SECRET_KEY", "test-secret-key-not-for-production-0123456789abcdef")
+
+from .base import *  # noqa: E402,F401,F403
 
 # =============================================================================
 # Core
@@ -14,7 +18,8 @@ from .base import *  # noqa: F401,F403
 DEBUG: bool = True
 ALLOWED_HOSTS: list[str] = ["*"]
 
-SECRET_KEY: str = "test-secret-key-not-for-production"  # noqa: S105
+SECRET_KEY: str = "test-secret-key-not-for-production-0123456789abcdef"  # noqa: S105
+SIMPLE_JWT["SIGNING_KEY"] = config("JWT_SIGNING_KEY", default="") or SECRET_KEY  # noqa: F405
 
 # =============================================================================
 # Database — SQLite in-memory for speed; no PostgreSQL required

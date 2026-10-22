@@ -1,14 +1,32 @@
 """Production settings for multilingual-task-api.
 
-Security-hardened configuration with HTTPS enforcement, HSTS preloading,
-JSON-only API responses, strict cache failure policy, and structured logging.
+Security-hardened configuration with HTTPS enforcement, ALB proxy header
+support, HSTS preloading, JSON-only API responses, strict cache failure
+policy, and single-stream structured JSON logging.
 """
 
 from __future__ import annotations
 
+from django.core.exceptions import ImproperlyConfigured
+
 from decouple import Csv, config
 
 from .base import *  # noqa: F401,F403
+
+# =============================================================================
+# Secret Validation — Fail fast on weak or placeholder secrets
+# =============================================================================
+_INSECURE_SECRET_PLACEHOLDERS = {
+    "",
+    "change-me-in-production",
+    "dev-insecure-secret-key-local-only-0123456789abcdef",
+    "test-secret-key-not-for-production",
+    "test-secret-key-not-for-production-0123456789abcdef",
+}
+if SECRET_KEY in _INSECURE_SECRET_PLACEHOLDERS or len(SECRET_KEY) < 32:  # noqa: F405
+    raise ImproperlyConfigured(
+        "Production SECRET_KEY must be a non-placeholder secret of at least 32 characters."
+    )
 
 # =============================================================================
 # Debug Mode
@@ -16,21 +34,34 @@ from .base import *  # noqa: F401,F403
 DEBUG: bool = False
 
 # =============================================================================
-# Hosts — Strict allowlist from environment
+# Hosts & Trusted Origins — Strict allowlists from environment
 # =============================================================================
-ALLOWED_HOSTS: list[str] = config("ALLOWED_HOSTS", cast=Csv())  # noqa: F405
+ALLOWED_HOSTS: list[str] = config("ALLOWED_HOSTS", cast=Csv())
+if not ALLOWED_HOSTS:
+    raise ImproperlyConfigured("ALLOWED_HOSTS must not be empty in production.")
+
+CSRF_TRUSTED_ORIGINS: list[str] = config("CSRF_TRUSTED_ORIGINS", default="", cast=Csv())
 
 # =============================================================================
-# Security Headers — HTTPS & HSTS
+# Security Headers — HTTPS, ALB Proxy Termination & HSTS
 # =============================================================================
-SECURE_SSL_REDIRECT: bool = True
+SECURE_PROXY_SSL_HEADER: tuple[str, str] = ("HTTP_X_FORWARDED_PROTO", "https")
+USE_X_FORWARDED_HOST: bool = config("USE_X_FORWARDED_HOST", default=True, cast=bool)
+TRUSTED_PROXY_COUNT: int = config("TRUSTED_PROXY_COUNT", default=1, cast=int)
+
+SECURE_SSL_REDIRECT: bool = config("SECURE_SSL_REDIRECT", default=True, cast=bool)
+# Exempt internal orchestrator/ALB HTTP health probes on container port 8000
+SECURE_REDIRECT_EXEMPT: list[str] = [
+    r"^api/v1/(live|health|ready)/$",
+]
+
 SECURE_HSTS_SECONDS: int = 31_536_000  # 1 year
 SECURE_HSTS_INCLUDE_SUBDOMAINS: bool = True
 SECURE_HSTS_PRELOAD: bool = True
 SESSION_COOKIE_SECURE: bool = True
+SESSION_COOKIE_HTTPONLY: bool = True
 CSRF_COOKIE_SECURE: bool = True
 SECURE_CONTENT_TYPE_NOSNIFF: bool = True
-SECURE_BROWSER_XSS_FILTER: bool = True
 X_FRAME_OPTIONS: str = "DENY"
 
 # =============================================================================
@@ -55,21 +86,17 @@ REST_FRAMEWORK["DEFAULT_RENDERER_CLASSES"] = [  # noqa: F405
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP: bool = True
 
 # =============================================================================
-# Logging — Structured JSON formatter for log aggregation
+# Logging — Single structured JSON stream handler (no duplicate emission)
 # =============================================================================
 LOGGING["formatters"]["json"] = {  # noqa: F405
     "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
     "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+    "datefmt": "%Y-%m-%dT%H:%M:%SZ",
 }
-
-# Add JSON handler alongside console for production log aggregation
-LOGGING["handlers"]["json"] = {  # noqa: F405
-    "class": "logging.StreamHandler",
-    "formatter": "json",
-}
-
-for logger_name in ("apps", "django", "django.server"):
-    LOGGING["loggers"][logger_name]["handlers"] = ["console", "json"]  # noqa: F405
+LOGGING["handlers"]["console"]["formatter"] = "json"  # noqa: F405
+LOGGING["root"]["handlers"] = ["console"]  # noqa: F405
+for _logger_name in ("apps", "django", "django.server", "celery"):
+    LOGGING["loggers"][_logger_name]["handlers"] = ["console"]  # noqa: F405
 
 # =============================================================================
 # Cache — Fail fast if Redis is unavailable in production
