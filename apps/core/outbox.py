@@ -12,12 +12,13 @@ import logging
 from datetime import timedelta
 from typing import Any
 
+from django.conf import settings
 from django.db import connection, transaction
 from django.db.models import F
 from django.utils import timezone
 
 from apps.core.events import EventPublisher
-from apps.core.models import OutboxEvent
+from apps.core.models import OutboxEvent, WebhookDelivery
 from apps.core.rls import rls_bypass
 from apps.core.tracing import get_current_traceparent, start_span
 from apps.core.webhooks import dispatch_organization_webhooks
@@ -179,3 +180,102 @@ def drain_outbox_batch(
             "retried": retried,
             "failed": failed,
         }
+
+
+def replay_dead_letter_outbox_event(event: OutboxEvent) -> OutboxEvent:
+    """Reset a ``failed`` dead-letter ``OutboxEvent`` to ``pending`` and schedule immediate relay."""
+    if event.status != "failed":
+        raise ValueError(
+            f"Only 'failed' outbox events can be replayed (current status: '{event.status}')."
+        )
+
+    now = timezone.now()
+    with transaction.atomic():
+        event.status = "pending"
+        event.attempts = 0
+        event.next_attempt_at = now
+        event.dispatched_at = None
+        event.last_error = ""
+        event.save(
+            update_fields=[
+                "status",
+                "attempts",
+                "next_attempt_at",
+                "dispatched_at",
+                "last_error",
+            ]
+        )
+        event_id_str = str(event.id)
+        transaction.on_commit(lambda: trigger_outbox_drain(event_id_str))
+
+    return event
+
+
+def prune_outbox_and_webhook_history(
+    *,
+    outbox_retention_days: int | None = None,
+    delivery_retention_days: int | None = None,
+    chunk_size: int = 500,
+    max_chunks: int = 20,
+) -> dict[str, int]:
+    """Prune aged ``dispatched`` outbox rows and webhook delivery logs in bounded chunks.
+
+    Never deletes ``pending``, ``processing``, or ``failed`` dead-letter outbox rows.
+    """
+    resolved_outbox_days = (
+        int(outbox_retention_days)
+        if outbox_retention_days is not None
+        else int(getattr(settings, "OUTBOX_RETENTION_DAYS", 14))
+    )
+    resolved_delivery_days = (
+        int(delivery_retention_days)
+        if delivery_retention_days is not None
+        else int(getattr(settings, "WEBHOOK_DELIVERY_RETENTION_DAYS", 30))
+    )
+    safe_chunk = max(1, int(chunk_size))
+    safe_max_chunks = max(1, int(max_chunks))
+
+    now = timezone.now()
+    outbox_cutoff = now - timedelta(days=max(0, resolved_outbox_days))
+    delivery_cutoff = now - timedelta(days=max(0, resolved_delivery_days))
+
+    outbox_deleted = 0
+    deliveries_deleted = 0
+
+    with rls_bypass():
+        for _ in range(safe_max_chunks):
+            batch_ids = list(
+                OutboxEvent.objects.filter(
+                    status="dispatched",
+                    dispatched_at__lte=outbox_cutoff,
+                )
+                .order_by("dispatched_at")
+                .values_list("id", flat=True)[:safe_chunk]
+            )
+            if not batch_ids:
+                break
+            deleted_count, _ = OutboxEvent.objects.filter(
+                id__in=batch_ids,
+                status="dispatched",
+            ).delete()
+            outbox_deleted += int(deleted_count)
+            if len(batch_ids) < safe_chunk:
+                break
+
+        for _ in range(safe_max_chunks):
+            delivery_ids = list(
+                WebhookDelivery.objects.filter(delivered_at__lte=delivery_cutoff)
+                .order_by("delivered_at")
+                .values_list("id", flat=True)[:safe_chunk]
+            )
+            if not delivery_ids:
+                break
+            deleted_count, _ = WebhookDelivery.objects.filter(id__in=delivery_ids).delete()
+            deliveries_deleted += int(deleted_count)
+            if len(delivery_ids) < safe_chunk:
+                break
+
+    return {
+        "outbox_deleted": outbox_deleted,
+        "deliveries_deleted": deliveries_deleted,
+    }

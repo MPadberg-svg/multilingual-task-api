@@ -22,7 +22,11 @@ from celery import shared_task
 from apps.ai_assist.services import AIService
 from apps.core.events import broadcast_task_websocket_event
 from apps.core.models import AuditLog, Organization, WebhookEndpoint
-from apps.core.outbox import drain_outbox_batch, enqueue_outbox_event
+from apps.core.outbox import (
+    drain_outbox_batch,
+    enqueue_outbox_event,
+    prune_outbox_and_webhook_history,
+)
 from apps.core.rls import rls_bypass
 from apps.core.webhooks import deliver_webhook_sync
 from apps.tasks.models import Task
@@ -223,3 +227,17 @@ def drain_outbox_events(
 ) -> dict[str, int]:
     """Drain pending Transactional Outbox events via ``FOR UPDATE SKIP LOCKED``."""
     return drain_outbox_batch(batch_size=batch_size, event_id=event_id)
+
+
+@shared_task
+def prune_telemetry_and_outbox_history(
+    outbox_retention_days: int | None = None,
+    delivery_retention_days: int | None = None,
+    chunk_size: int = 500,
+) -> dict[str, int]:
+    """Prune aged ``dispatched`` outbox rows and webhook delivery logs in bounded batches."""
+    return prune_outbox_and_webhook_history(
+        outbox_retention_days=outbox_retention_days,
+        delivery_retention_days=delivery_retention_days,
+        chunk_size=chunk_size,
+    )

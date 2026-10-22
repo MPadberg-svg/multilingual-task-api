@@ -8,7 +8,7 @@ project_name = "multilingual-task-api"
 environment  = "production"
 
 # Immutable container image tag (e.g. Git commit SHA or release tag pushed to ECR)
-image_tag = "v1.5.0"
+image_tag = "v1.6.0"
 
 # GitHub OIDC keyless deployment configuration
 github_repository           = "MPadberg-svg/multilingual-task-api"

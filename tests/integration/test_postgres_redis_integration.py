@@ -18,6 +18,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import DatabaseError, connections, transaction
+from django.db.models import Q
 
 import pytest
 from asgiref.sync import sync_to_async
@@ -479,3 +480,73 @@ def test_postgres_outbox_concurrent_skip_locked_relay_drains_exactly_once() -> N
     assert sum(r["dispatched"] for r in worker_results) == 6
     assert sorted(dispatched_seqs) == [0, 1, 2, 3, 4, 5]
     assert OutboxEvent.objects.filter(organization=org, status="dispatched").count() == 6
+
+
+@pytest.mark.django_db
+def test_postgres_pg_trgm_gin_indexes_accelerate_multilingual_ilike_search() -> None:
+    """
+    Verify on live PostgreSQL 16 that:
+    1. Extension pg_trgm and GIN indexes tasks_trans_title_trgm_idx + tasks_trans_desc_trgm_idx exist.
+    2. PostgreSQL 16's query planner selects Bitmap Index Scan over both pg_trgm GIN indexes
+       for TrigramILike (ILIKE '%...%') predicates on tasks_task_translation.
+    3. End-to-end GET /api/v1/tasks/?search=... matches case-insensitive multilingual substrings.
+    """
+    cache.clear()
+    owner = User.objects.create_user(email="pg-trgm@example.com", password="pw")
+    org = Organization.objects.create(name="PG Trgm Org", slug="pg-trgm-org")
+    OrganizationMember.objects.create(user=owner, organization=org, role="owner")
+
+    target_task = Task.objects.create(user=owner, organization=org, status="pending")
+    target_task.set_current_language("fr")
+    target_task.title = "Calibration QuantumTrigramProbe francophone"
+    target_task.description = "Annotation multilingue haute précision"
+    target_task.save()
+
+    other_task = Task.objects.create(user=owner, organization=org, status="pending")
+    other_task.set_current_language("en")
+    other_task.title = "Unrelated baseline item"
+    other_task.description = "Standard review queue"
+    other_task.save()
+
+    conn = connections["default"]
+    with transaction.atomic():
+        with conn.cursor() as cur:
+            cur.execute("SELECT extname FROM pg_extension WHERE extname = 'pg_trgm'")
+            assert cur.fetchone() == ("pg_trgm",)
+
+            cur.execute("""
+                SELECT indexname
+                FROM pg_indexes
+                WHERE tablename = 'tasks_task_translation'
+                  AND indexname IN ('tasks_trans_title_trgm_idx', 'tasks_trans_desc_trgm_idx')
+                ORDER BY indexname
+                """)
+            assert [row[0] for row in cur.fetchall()] == [
+                "tasks_trans_desc_trgm_idx",
+                "tasks_trans_title_trgm_idx",
+            ]
+
+            translation_model = Task._parler_meta.root_model
+            trgm_qs = translation_model.objects.filter(language_code__in=["en", "es", "fr"]).filter(
+                Q(title__trgm_ilike="QuantumTrigramProbe")
+                | Q(description__trgm_ilike="QuantumTrigramProbe")
+            )
+            sql, params = trgm_qs.query.get_compiler("default").as_sql()
+            assert "ILIKE" in sql
+
+            cur.execute("SET LOCAL enable_seqscan = off")
+            cur.execute(f"EXPLAIN (FORMAT JSON) {sql}", params)
+            plan_json = json.dumps(cur.fetchone()[0])
+            assert "tasks_trans_title_trgm_idx" in plan_json
+            assert "tasks_trans_desc_trgm_idx" in plan_json
+
+    token = str(RefreshToken.for_user(owner).access_token)
+    client = APIClient()
+    client.credentials(
+        HTTP_AUTHORIZATION=f"Bearer {token}",
+        HTTP_X_ORGANIZATION_ID=str(org.id),
+    )
+    resp = client.get("/api/v1/tasks/?search=trigramprobe")
+    assert resp.status_code == 200
+    assert resp.json()["count"] == 1
+    assert resp.json()["results"][0]["id"] == str(target_task.id)
