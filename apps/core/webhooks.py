@@ -19,6 +19,7 @@ from django.conf import settings
 from django.utils import timezone
 
 from apps.core.models import WebhookDelivery, WebhookEndpoint
+from apps.core.tracing import start_span
 
 logger = logging.getLogger(__name__)
 
@@ -170,14 +171,27 @@ def deliver_webhook_sync(
     success = False
     error_message = ""
 
-    try:
-        safe_url = validate_webhook_url(endpoint.url, resolve_dns=True)
-        status_code = _send_http_post_no_redirect(safe_url, body_bytes, headers)
-        success = 200 <= status_code < 300
-        if not success:
-            error_message = f"Non-2xx HTTP status {status_code}"
-    except Exception as exc:
-        error_message = str(exc)[:450]
+    with start_span(
+        "webhook.deliver",
+        kind="CLIENT",
+        attributes={
+            "webhook.id": str(endpoint.id),
+            "webhook.event": event_type,
+            "organization.id": str(endpoint.organization_id),
+        },
+    ) as span:
+        headers["traceparent"] = span.traceparent
+        try:
+            safe_url = validate_webhook_url(endpoint.url, resolve_dns=True)
+            status_code = _send_http_post_no_redirect(safe_url, body_bytes, headers)
+            span.set_attribute("http.status_code", status_code)
+            success = 200 <= status_code < 300
+            if not success:
+                error_message = f"Non-2xx HTTP status {status_code}"
+                span.set_error(error_message)
+        except Exception as exc:
+            error_message = str(exc)[:450]
+            span.set_error(error_message)
 
     now = timezone.now()
     if success:

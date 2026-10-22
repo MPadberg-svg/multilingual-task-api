@@ -23,6 +23,7 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import translation
 from django.utils.deprecation import MiddlewareMixin
 
+from apps.core.tracing import get_current_trace_context, start_span
 from apps.core.views import REQUEST_COUNT_KEY, increment_metric
 
 logger = logging.getLogger(__name__)
@@ -147,23 +148,41 @@ class LanguageResolutionMiddleware(MiddlewareMixin):
 
 
 class CorrelationIdMiddleware(MiddlewareMixin):
-    """Propagate correlation IDs for distributed tracing."""
+    """Propagate ``X-Correlation-Id`` and W3C ``traceparent`` distributed trace spans."""
 
-    def process_request(self, request: HttpRequest) -> None:
-        """Attach or generate ``X-Correlation-Id`` on the request."""
+    def __call__(self, request: HttpRequest) -> HttpResponse:
         cid = request.headers.get("X-Correlation-Id", "").strip()
         if not cid or len(cid) > 128:
             cid = str(uuid.uuid4())
         setattr(request, "correlation_id", cid)
 
-    def process_response(self, request: HttpRequest, response: HttpResponse) -> HttpResponse:
-        """Echo correlation ID back in response headers."""
-        response["X-Correlation-Id"] = getattr(request, "correlation_id", str(uuid.uuid4()))
+        incoming_tp = request.headers.get("traceparent", "").strip() or None
+        method = (request.method or "GET").upper()
+        with start_span(
+            f"{method} {request.path}",
+            kind="SERVER",
+            parent_traceparent=incoming_tp,
+            attributes={
+                "http.method": method,
+                "http.target": request.path,
+                "correlation.id": cid,
+            },
+        ) as span:
+            setattr(request, "trace_id", span.trace_id)
+            setattr(request, "span_id", span.span_id)
+            response: HttpResponse = self.get_response(request)  # type: ignore[assignment]
+            span.set_attribute("http.status_code", response.status_code)
+            if response.status_code >= 500:
+                span.set_error(f"HTTP {response.status_code}")
+
+        response["X-Correlation-Id"] = cid
+        response["X-Trace-ID"] = span.trace_id
+        response["traceparent"] = span.traceparent
         return response
 
 
 class RequestLoggingMiddleware(MiddlewareMixin):
-    """Log structured JSON for all HTTP requests with correlation context."""
+    """Log structured JSON for all HTTP requests with correlation and trace context."""
 
     _SENSITIVE_QUERY_KEYS = frozenset(
         {"token", "access_token", "refresh_token", "password", "secret", "api_key", "key"}
@@ -172,12 +191,15 @@ class RequestLoggingMiddleware(MiddlewareMixin):
     def process_request(self, request: HttpRequest) -> None:
         """Log incoming request with structured context."""
         correlation_id = getattr(request, "correlation_id", "unknown")
+        trace_ctx = get_current_trace_context()
         user = resolve_authenticated_user(request)
         user_id = user.id if user is not None and getattr(user, "is_authenticated", False) else None
 
         log_data = {
             "type": "request",
             "correlation_id": correlation_id,
+            "trace_id": trace_ctx.trace_id if trace_ctx else getattr(request, "trace_id", None),
+            "span_id": trace_ctx.span_id if trace_ctx else getattr(request, "span_id", None),
             "user_id": user_id,
             "method": request.method,
             "path": request.path,
@@ -191,12 +213,15 @@ class RequestLoggingMiddleware(MiddlewareMixin):
         increment_metric(REQUEST_COUNT_KEY)
 
         correlation_id = getattr(request, "correlation_id", "unknown")
+        trace_ctx = get_current_trace_context()
         user = getattr(request, "user", None)
         user_id = user.id if user is not None and getattr(user, "is_authenticated", False) else None
 
         log_data = {
             "type": "response",
             "correlation_id": correlation_id,
+            "trace_id": trace_ctx.trace_id if trace_ctx else getattr(request, "trace_id", None),
+            "span_id": trace_ctx.span_id if trace_ctx else getattr(request, "span_id", None),
             "user_id": user_id,
             "method": request.method,
             "path": request.path,

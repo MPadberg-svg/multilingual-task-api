@@ -206,11 +206,19 @@ SPECTACULAR_SETTINGS: dict[str, Any] = {
     "DESCRIPTION": (
         "Production-grade multi-tenant REST & WebSocket API for multilingual RLHF task "
         "orchestration, atomic annotation leasing, inter-annotator consensus, OpenAI FinOps "
-        "telemetry, scoped M2M API keys, and HMAC-signed webhooks."
+        "telemetry, scoped M2M API keys, HMAC-signed webhooks, keyset cursor pagination, "
+        "and W3C/OTLP distributed tracing."
     ),
-    "VERSION": "1.2.0",
+    "VERSION": "1.3.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
+
+# =============================================================================
+# OpenTelemetry / W3C Distributed Tracing
+# =============================================================================
+OTEL_SERVICE_NAME: str = config("OTEL_SERVICE_NAME", default="multilingual-task-api")
+OTEL_EXPORTER_OTLP_ENDPOINT: str = config("OTEL_EXPORTER_OTLP_ENDPOINT", default="")
+OTEL_EXPORTER_OTLP_HEADERS: str = config("OTEL_EXPORTER_OTLP_HEADERS", default="")
 
 # =============================================================================
 # Database

@@ -31,6 +31,7 @@ from apps.ai_assist.schemas import (
     TranslationSuggestionSchema,
 )
 from apps.core.security import InputValidator
+from apps.core.tracing import start_span
 from apps.core.views import record_ai_token_usage, record_cache_hit, record_cache_miss
 
 logger = logging.getLogger(__name__)
@@ -110,28 +111,39 @@ class AIService:
         """
 
         def _raw_call() -> str:
-            response = self.client.chat.completions.create(
-                model=settings.OPENAI_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=temperature,
-                max_tokens=settings.OPENAI_MAX_TOKENS,
-                response_format={"type": "json_object"},
-            )
-            usage = getattr(response, "usage", None)
-            raw_pt = getattr(usage, "prompt_tokens", 0)
-            raw_ct = getattr(usage, "completion_tokens", 0)
-            prompt_tokens = int(raw_pt) if isinstance(raw_pt, (int, float)) else 0
-            completion_tokens = int(raw_ct) if isinstance(raw_ct, (int, float)) else 0
-            record_ai_token_usage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                organization_id=_ACTIVE_ORG_ID.get(),
-            )
-            content = response.choices[0].message.content
-            return content or ""
+            with start_span(
+                "openai.chat.completions",
+                kind="CLIENT",
+                attributes={
+                    "gen_ai.system": "openai",
+                    "gen_ai.request.model": str(settings.OPENAI_MODEL),
+                    "organization.id": _ACTIVE_ORG_ID.get(),
+                },
+            ) as span:
+                response = self.client.chat.completions.create(
+                    model=settings.OPENAI_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=temperature,
+                    max_tokens=settings.OPENAI_MAX_TOKENS,
+                    response_format={"type": "json_object"},
+                )
+                usage = getattr(response, "usage", None)
+                raw_pt = getattr(usage, "prompt_tokens", 0)
+                raw_ct = getattr(usage, "completion_tokens", 0)
+                prompt_tokens = int(raw_pt) if isinstance(raw_pt, (int, float)) else 0
+                completion_tokens = int(raw_ct) if isinstance(raw_ct, (int, float)) else 0
+                span.set_attribute("gen_ai.usage.input_tokens", prompt_tokens)
+                span.set_attribute("gen_ai.usage.output_tokens", completion_tokens)
+                record_ai_token_usage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    organization_id=_ACTIVE_ORG_ID.get(),
+                )
+                content = response.choices[0].message.content
+                return content or ""
 
         try:
             return str(openai_circuit_breaker.call(_raw_call))

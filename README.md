@@ -7,8 +7,8 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7.0-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?logo=openai&logoColor=white)](https://openai.com/)
-[![Version](https://img.shields.io/badge/release-v1.2.0-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
-[![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)](https://codecov.io)
+[![Version](https://img.shields.io/badge/release-v1.3.0-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
+[![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](https://codecov.io)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![AWS](https://img.shields.io/badge/AWS-ECS_Fargate-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/ecs/)
 
@@ -49,6 +49,7 @@ The Multilingual Task API solves the core infrastructure challenge of AI annotat
 - **Enterprise M2M API Keys & Idempotency** — Prefix-indexed SHA-256 `OrganizationAPIKey` (`mlk_live_<prefix>_...`) with route scopes (`tasks:read`, `tasks:write`, `tasks:export`, `ai:write`) plus `Idempotency-Key` middleware (`24h` Redis replay, `409` in-flight lock, `422` payload-mismatch protection)
 - **SSRF-Hardened Signed Webhooks** — Outbound `WebhookEndpoint` delivery signed with `X-MLTask-Signature-256: sha256=<hmac>`, non-redirecting TLS transport, literal IP + DNS-rebinding SSRF blocking (`127.0.0.0/8`, RFC1918, `169.254.169.254`), and Celery exponential backoff
 - **Async Auto-Translation & FinOps Telemetry** — `auto_translate=true` on task creation dispatches background OpenAI EN/ES/FR translation + live WebSocket notification while tracking per-tenant `prompt_tokens`, `completion_tokens`, and estimated USD spend in `/usage/` and Prometheus `/api/v1/metrics/`
+- **1M+ Scale Keyset Cursor Pagination & W3C/OTLP Tracing** — Adaptive `$O(1)$` composite keyset cursor pagination (`?pagination=cursor`, ordered by `(-created_at, -id)`) alongside standard offset pagination, plus zero-dependency W3C `traceparent` & OpenTelemetry OTLP/HTTP JSON span export correlating HTTP requests, Celery workers, OpenAI spans, and outbound webhooks
 - **Mounted CSP-Nonce Live Console** — Interactive `/explorer/` operations UI protected by per-request cryptographic CSP nonces (`'nonce-...'`, zero `'unsafe-inline'`) with live `/ws/tasks/` WebSocket streaming
 
 ---
@@ -628,10 +629,11 @@ make locust-headless    # Headless: 50 users, 60s run, CSV output
 
 The `config.settings.testing` module is selected automatically via `pytest.ini` (`DJANGO_SETTINGS_MODULE`). This means the full test suite runs with **zero infrastructure** — no PostgreSQL, no Redis, no Docker.
 
-### Test Suite (193 tests · 91% coverage)
+### Test Suite (197 tests · 92% coverage)
 
 | Module | Covers |
 |--------|--------|
+| `apps/core/tests/test_v130_cursor_pagination_and_otel.py` | Composite keyset cursor pagination (`?pagination=cursor`), W3C `traceparent` validation, 4-boundary span correlation, OTLP/HTTP JSON export |
 | `apps/core/tests/test_wave1_tenancy_auth_idempotency.py` | `/auth/me/`, `/auth/logout/` blacklisting, Organization CRUD/RBAC/quotas, AuditLogs, `Idempotency-Key` |
 | `apps/tasks/tests/test_wave2_wave3_rlhf_bulk_export.py` | Atomic task leasing, rubric annotations, IAA consensus, split adjudication, `/bulk/`, `/export/?format=jsonl`, `auto_translate` |
 | `apps/core/tests/test_wave4_apikeys_webhooks_explorer_finops.py` | SHA-256 M2M API keys & scopes, SSRF/DNS-rebinding webhook defense, HMAC-SHA256 signing, FinOps token/USD metrics, `/explorer/` nonce CSP |

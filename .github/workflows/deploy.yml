@@ -12,14 +12,22 @@ on:
           - staging
           - production
 
+permissions:
+  id-token: write
+  contents: read
+
 env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
   ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
   ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
   ECS_SERVICE: ${{ vars.ECS_SERVICE }}
   ECS_TASK_DEFINITION: ${{ vars.ECS_TASK_DEFINITION }}
   ECS_CELERY_SERVICE: ${{ vars.ECS_CELERY_SERVICE }}
   ECS_CELERY_TASK_DEFINITION: ${{ vars.ECS_CELERY_TASK_DEFINITION }}
+  ECS_CELERY_BEAT_SERVICE: ${{ vars.ECS_CELERY_BEAT_SERVICE }}
+  ECS_CELERY_BEAT_TASK_DEFINITION: ${{ vars.ECS_CELERY_BEAT_TASK_DEFINITION }}
   ALB_PROTOCOL: ${{ vars.ALB_PROTOCOL || 'https' }}
 
 jobs:
@@ -47,7 +55,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC preferred)
+        if: env.AWS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials (static secret fallback)
+        if: env.AWS_ROLE_ARN == ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -78,7 +94,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC preferred)
+        if: env.AWS_ROLE_ARN != ''
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials (static secret fallback)
+        if: env.AWS_ROLE_ARN == ''
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -150,6 +174,26 @@ jobs:
             --service "$ECS_CELERY_SERVICE" \
             --task-definition "$NEW_CELERY_ARN" > /dev/null
           aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_CELERY_SERVICE"
+
+      - name: Deploy ECS Celery Beat scheduler service (if configured)
+        if: env.ECS_CELERY_BEAT_SERVICE != '' && env.ECS_CELERY_BEAT_TASK_DEFINITION != ''
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_CELERY_BEAT_TASK_DEFINITION" \
+            --query taskDefinition \
+          | jq --arg IMG "$IMAGE" '
+              del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+              | .containerDefinitions[0].image = $IMG
+            ' > task-def-celery-beat.json
+          NEW_BEAT_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-def-celery-beat.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_CELERY_BEAT_SERVICE" \
+            --task-definition "$NEW_BEAT_ARN" > /dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_CELERY_BEAT_SERVICE"
 
       - name: Warm Redis cache
         run: |

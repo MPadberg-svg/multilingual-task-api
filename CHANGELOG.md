@@ -7,6 +7,19 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.3.0] — 2026-10-22
+
+### Added
+- **Composite Keyset Cursor Pagination (`apps/core/pagination.py`)**:
+  - Added `KeysetCursorPagination` (`ordering = ("-created_at", "-id")`) integrated into `StandardResultsSetPagination` so `/api/v1/tasks/` and `/api/v1/organizations/{id}/audit-logs/` transparently switch to `$O(1)$` keyset index seeks when `?pagination=cursor` or `?cursor=...` is supplied, emitting `X-Pagination-Mode: cursor|offset` while preserving 100% backward compatibility with standard offset pagination.
+- **W3C Trace Context & OpenTelemetry OTLP/HTTP Exporter (`apps/core/tracing.py`)**:
+  - Implemented spec-compliant W3C `traceparent` parsing/generation and vendor-neutral OTLP/HTTP JSON span export (`OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, `OTEL_SERVICE_NAME`) with zero external protobuf/gRPC dependencies.
+  - Propagated `trace_id` and parent/child `span_id` across Django HTTP requests (`CorrelationIdMiddleware` + `X-Trace-ID` / `traceparent` headers + structured JSON logs), Celery producer/worker tasks (`config/celery.py` signals), OpenAI completions (`gen_ai.usage.*` attributes), and outbound signed webhook HTTP POSTs.
+- **AWS ECS OIDC Keyless Deployment & CI Modernization (`.github/workflows/deploy.yml`, `.github/workflows/ci.yml`)**:
+  - Added GitHub OIDC role federation (`AWS_ROLE_ARN` + `id-token: write`) with automatic fallback to static IAM credentials, added rolling deployment support for `ECS_CELERY_BEAT_SERVICE`, and opted workflows into Node 24 (`FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true`).
+
+---
+
 ## [1.2.0] — 2026-10-22
 
 ### Added
