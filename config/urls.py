@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from django.conf import settings
 from django.contrib import admin
-from django.urls import include, path
+from django.urls import include, path, re_path
 from django.views.decorators.csrf import csrf_exempt
 
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
@@ -29,15 +29,21 @@ from apps.core.tenant_views import (
     CurrentUserView,
     ExplorerConsoleView,
     LogoutView,
+    OIDCTokenExchangeView,
     OrganizationAPIKeyDetailView,
     OrganizationAPIKeyListCreateView,
     OrganizationAuditLogListView,
     OrganizationDetailView,
+    OrganizationFinOpsView,
     OrganizationListCreateView,
     OrganizationMemberDetailView,
     OrganizationMemberListCreateView,
     OrganizationOutboxListView,
     OrganizationOutboxReplayView,
+    OrganizationSCIMTokenRotateView,
+    OrganizationSCIMUserDetailView,
+    OrganizationSCIMUsersView,
+    OrganizationSSOConfigView,
     OrganizationUsageView,
     OrganizationWebhookDeliveryListView,
     OrganizationWebhookDeliveryReplayView,
@@ -68,6 +74,11 @@ urlpatterns = [
     ),
     path("api/v1/auth/me/", CurrentUserView.as_view(), name="auth-me"),
     path("api/v1/auth/logout/", LogoutView.as_view(), name="auth-logout"),
+    path(
+        "api/v1/auth/sso/oidc/exchange/",
+        OIDCTokenExchangeView.as_view(),
+        name="auth-oidc-exchange",
+    ),
     # Multi-tenant Organizations, RBAC, Audit Logs, FinOps Usage, API Keys & Webhooks
     path(
         "api/v1/organizations/",
@@ -98,6 +109,31 @@ urlpatterns = [
         "api/v1/organizations/<uuid:org_id>/usage/",
         OrganizationUsageView.as_view(),
         name="organization-usage",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/finops/",
+        OrganizationFinOpsView.as_view(),
+        name="organization-finops",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/sso/",
+        OrganizationSSOConfigView.as_view(),
+        name="organization-sso-config",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/sso/scim-token/",
+        OrganizationSCIMTokenRotateView.as_view(),
+        name="organization-scim-token-rotate",
+    ),
+    re_path(
+        r"^api/v1/organizations/(?P<org_id>[0-9a-f-]{36})/scim/v2/Users/?$",
+        OrganizationSCIMUsersView.as_view(),
+        name="organization-scim-users",
+    ),
+    re_path(
+        r"^api/v1/organizations/(?P<org_id>[0-9a-f-]{36})/scim/v2/Users/(?P<member_id>[0-9a-f-]{36})/?$",
+        OrganizationSCIMUserDetailView.as_view(),
+        name="organization-scim-user-detail",
     ),
     path(
         "api/v1/organizations/<uuid:org_id>/api-keys/",

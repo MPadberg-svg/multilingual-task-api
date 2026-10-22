@@ -212,12 +212,26 @@ SPECTACULAR_SETTINGS: dict[str, Any] = {
     "DESCRIPTION": (
         "Production-grade multi-tenant REST & WebSocket API for multilingual RLHF task "
         "orchestration, atomic annotation leasing, inter-annotator consensus, OpenAI FinOps "
-        "telemetry, scoped M2M API keys, HMAC-signed webhooks, transactional outbox relay "
-        "with dead-letter replay, PostgreSQL Row-Level Security (RLS), pg_trgm search, "
-        "plan-tiered rate limiting, keyset cursor pagination, and W3C/OTLP distributed tracing."
+        "token/spend budget governance, OIDC SSO & SCIM 2.0 enterprise provisioning, scoped "
+        "M2M API keys, HMAC-signed webhooks, transactional outbox relay with dead-letter "
+        "replay, PostgreSQL Row-Level Security (RLS), read-replica query routing, pg_trgm "
+        "search, plan-tiered rate limiting, keyset cursor pagination, and W3C/OTLP tracing."
     ),
-    "VERSION": "1.6.0",
+    "VERSION": "1.7.0",
     "SERVE_INCLUDE_SCHEMA": False,
+    "ENUM_NAME_OVERRIDES": {
+        "AssignableRoleEnum": [
+            ("viewer", "Viewer"),
+            ("contributor", "Contributor"),
+            ("admin", "Admin"),
+        ],
+        "OrganizationRoleEnum": [
+            ("viewer", "Viewer"),
+            ("contributor", "Contributor"),
+            ("admin", "Admin"),
+            ("owner", "Owner"),
+        ],
+    },
 }
 
 # =============================================================================
@@ -228,7 +242,7 @@ OTEL_EXPORTER_OTLP_ENDPOINT: str = config("OTEL_EXPORTER_OTLP_ENDPOINT", default
 OTEL_EXPORTER_OTLP_HEADERS: str = config("OTEL_EXPORTER_OTLP_HEADERS", default="")
 
 # =============================================================================
-# Database
+# Database & Read-Replica Routing
 # =============================================================================
 DATABASES: dict[str, Any] = {
     "default": {
@@ -243,6 +257,39 @@ DATABASES: dict[str, Any] = {
             "connect_timeout": 10,
         },
     }
+}
+
+POSTGRES_REPLICA_HOST: str = config("POSTGRES_REPLICA_HOST", default="").strip()
+POSTGRES_REPLICA_PORT: int = config(
+    "POSTGRES_REPLICA_PORT",
+    default=str(DATABASES["default"]["PORT"]),
+    cast=int,
+)
+if POSTGRES_REPLICA_HOST:
+    DATABASES["replica"] = {
+        **DATABASES["default"],
+        "HOST": POSTGRES_REPLICA_HOST,
+        "PORT": POSTGRES_REPLICA_PORT,
+        "TEST": {"MIRROR": "default"},
+    }
+
+DATABASE_ROUTERS: list[str] = ["apps.core.db_router.ReplicaDatabaseRouter"]
+
+# =============================================================================
+# Multi-Tenant Monthly AI FinOps Plan Ceilings (Tokens & Micro-USD)
+# =============================================================================
+AI_PLAN_MONTHLY_TOKEN_BUDGETS: dict[str, int] = {
+    "free": 100_000,
+    "starter": 1_000_000,
+    "professional": 10_000_000,
+    "enterprise": 100_000_000,
+}
+
+AI_PLAN_MONTHLY_COST_MICROUSD: dict[str, int] = {
+    "free": 5_000_000,  # $5.00 / month
+    "starter": 50_000_000,  # $50.00 / month
+    "professional": 500_000_000,  # $500.00 / month
+    "enterprise": 5_000_000_000,  # $5,000.00 / month
 }
 
 # =============================================================================

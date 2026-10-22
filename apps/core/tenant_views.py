@@ -19,19 +19,23 @@ from django.views import View
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.throttling import AnonRateThrottle
 from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.core.db_router import use_read_replica
+from apps.core.finops import get_org_finops_summary, invalidate_org_budget_cache
 from apps.core.middleware import RequestLoggingMiddleware
 from apps.core.models import (
     AuditLog,
     Organization,
     OrganizationAPIKey,
     OrganizationMember,
+    OrganizationSSOConfig,
     OutboxEvent,
     WebhookDelivery,
     WebhookEndpoint,
@@ -42,15 +46,29 @@ from apps.core.serializers import (
     AuditLogSerializer,
     CurrentUserSerializer,
     LogoutSerializer,
+    OIDCTokenExchangeSerializer,
     OrganizationAPIKeyCreateSerializer,
     OrganizationAPIKeySerializer,
+    OrganizationFinOpsBudgetSerializer,
     OrganizationMemberCreateSerializer,
     OrganizationMemberSerializer,
     OrganizationSerializer,
+    OrganizationSSOConfigSerializer,
     OutboxEventSerializer,
     WebhookDeliverySerializer,
     WebhookEndpointCreateSerializer,
     WebhookEndpointSerializer,
+)
+from apps.core.sso import (
+    SCIMProvisioningError,
+    SSOAuthenticationError,
+    authenticate_scim_bearer,
+    exchange_oidc_token_for_jwt,
+    scim_delete_user,
+    scim_get_user,
+    scim_list_users,
+    scim_provision_user,
+    scim_update_user,
 )
 from apps.core.views import get_org_ai_usage
 from apps.core.webhooks import deliver_webhook_sync
@@ -396,9 +414,10 @@ class OrganizationUsageView(APIView):
     serializer_class = OrganizationSerializer
 
     def get(self, request: Request, org_id: str) -> Response:
-        org, _role = _get_org_and_role(request.user, org_id)
-        seat_used = org.members.count()
-        tasks_used = org.tasks.filter(is_active=True).count()
+        with use_read_replica() as query_target:
+            org, _role = _get_org_and_role(request.user, org_id)
+            seat_used = OrganizationMember.objects.filter(organization_id=org.id).count()
+            tasks_used = org.tasks.filter(is_active=True).count()
         ai_usage = get_org_ai_usage(str(org.id))
 
         return Response(
@@ -419,8 +438,59 @@ class OrganizationUsageView(APIView):
                     "completion_tokens_total": ai_usage["completion_tokens"],
                     "estimated_cost_usd": ai_usage["estimated_cost_usd"],
                 },
-            }
+            },
+            headers={"X-Query-Target": query_target},
         )
+
+
+class OrganizationFinOpsView(APIView):
+    """Monthly AI token/USD budget governance and read-replica FinOps analytics."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationFinOpsBudgetSerializer
+
+    @extend_schema(responses={200: {"type": "object"}})
+    def get(self, request: Request, org_id: str) -> Response:
+        with use_read_replica():
+            org, _role = _get_org_and_role(request.user, org_id)
+        period_param = (request.query_params.get("billing_period") or "").strip() or None
+        summary, query_target = get_org_finops_summary(org, billing_period=period_param)
+        return Response(summary, headers={"X-Query-Target": query_target})
+
+    @extend_schema(
+        request=OrganizationFinOpsBudgetSerializer,
+        responses={200: {"type": "object"}},
+    )
+    @transaction.atomic
+    def patch(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        serializer = OrganizationFinOpsBudgetSerializer(data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+
+        updated_fields: list[str] = []
+        for field_name in (
+            "monthly_ai_token_budget",
+            "monthly_ai_cost_budget_microusd",
+            "ai_budget_alert_threshold_pct",
+        ):
+            if field_name in serializer.validated_data:
+                setattr(org, field_name, int(serializer.validated_data[field_name]))
+                updated_fields.append(field_name)
+
+        if updated_fields:
+            org.save(update_fields=updated_fields)
+            invalidate_org_budget_cache(str(org.id))
+            _record_audit(
+                request,
+                action="finops_budget_updated",
+                resource_type="Organization",
+                resource_id=str(org.id),
+                organization=org,
+                metadata={f: getattr(org, f) for f in updated_fields},
+            )
+
+        summary, query_target = get_org_finops_summary(org)
+        return Response(summary, headers={"X-Query-Target": query_target})
 
 
 class OrganizationAPIKeyListCreateView(APIView):
@@ -721,6 +791,276 @@ class OrganizationOutboxReplayView(APIView):
         )
         replayed.refresh_from_db()
         return Response(OutboxEventSerializer(replayed).data, status=status.HTTP_200_OK)
+
+
+class OrganizationSSOConfigView(APIView):
+    """Inspect or configure enterprise OIDC SSO & SCIM 2.0 provisioning for an organization."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationSSOConfigSerializer
+
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        sso_config, _ = OrganizationSSOConfig.objects.get_or_create(organization=org)
+        return Response(OrganizationSSOConfigSerializer(sso_config).data)
+
+    @transaction.atomic
+    def patch(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        sso_config, _ = OrganizationSSOConfig.objects.get_or_create(organization=org)
+        serializer = OrganizationSSOConfigSerializer(
+            sso_config,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        updated = serializer.save()
+        _record_audit(
+            request,
+            action="sso_updated",
+            resource_type="OrganizationSSOConfig",
+            resource_id=str(updated.id),
+            organization=org,
+            metadata={
+                "enabled": updated.enabled,
+                "oidc_issuer": updated.oidc_issuer,
+                "scim_enabled": updated.scim_enabled,
+                "jit_provisioning": updated.jit_provisioning,
+            },
+        )
+        return Response(OrganizationSSOConfigSerializer(updated).data)
+
+
+class OrganizationSCIMTokenRotateView(APIView):
+    """Mint or rotate the organization's SHA-256-hashed RFC 7644 SCIM 2.0 Bearer credential."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationSSOConfigSerializer
+
+    @extend_schema(request=None, responses={201: {"type": "object"}})
+    @transaction.atomic
+    def post(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        sso_config, _ = OrganizationSSOConfig.objects.get_or_create(organization=org)
+        raw_token = sso_config.rotate_scim_token()
+        _record_audit(
+            request,
+            action="scim_token_rotated",
+            resource_type="OrganizationSSOConfig",
+            resource_id=str(sso_config.id),
+            organization=org,
+            metadata={"scim_token_prefix": sso_config.scim_token_prefix},
+        )
+        return Response(
+            {
+                "organization_id": str(org.id),
+                "scim_enabled": sso_config.scim_enabled,
+                "scim_token_prefix": sso_config.scim_token_prefix,
+                "scim_token": raw_token,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class OIDCTokenExchangeView(APIView):
+    """Exchange an enterprise IdP OIDC ``id_token`` for local SimpleJWT session credentials."""
+
+    authentication_classes: list[Any] = []
+    permission_classes = [AllowAny]
+    throttle_classes = [AnonRateThrottle]
+    serializer_class = OIDCTokenExchangeSerializer
+
+    @extend_schema(
+        request=OIDCTokenExchangeSerializer,
+        responses={200: {"type": "object"}, 401: {"type": "object"}, 403: {"type": "object"}},
+    )
+    def post(self, request: Request) -> Response:
+        serializer = OIDCTokenExchangeSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        ip_raw = RequestLoggingMiddleware._get_client_ip(request._request)
+        ip_val = ip_raw if ip_raw != "unknown" else None
+        user_agent = str(request.META.get("HTTP_USER_AGENT", ""))[:500]
+
+        try:
+            payload = exchange_oidc_token_for_jwt(
+                organization_slug=str(serializer.validated_data["organization_slug"]),
+                raw_id_token=str(serializer.validated_data["id_token"]),
+                ip_address=ip_val,
+                user_agent=user_agent,
+            )
+        except SSOAuthenticationError as exc:
+            return Response({"error": str(exc)}, status=exc.status_code)
+
+        return Response(payload, status=status.HTTP_200_OK)
+
+
+def _client_meta(request: Request) -> tuple[str | None, str]:
+    ip_raw = RequestLoggingMiddleware._get_client_ip(request._request)
+    ip_val = ip_raw if ip_raw != "unknown" else None
+    user_agent = str(request.META.get("HTTP_USER_AGENT", ""))[:500]
+    return ip_val, user_agent
+
+
+class OrganizationSCIMUsersView(APIView):
+    """RFC 7643/7644 SCIM 2.0 ``/scim/v2/Users`` directory list and user provisioning endpoint."""
+
+    authentication_classes: list[Any] = []
+    permission_classes = [AllowAny]
+    throttle_classes: list[Any] = []
+
+    @extend_schema(
+        operation_id="v1_organizations_scim_v2_users_list",
+        responses={200: {"type": "object"}, 401: {"type": "object"}},
+    )
+    def get(self, request: Request, org_id: str) -> Response:
+        try:
+            org, _sso_config = authenticate_scim_bearer(request, org_id)
+            raw_start = request.query_params.get("startIndex", "1")
+            raw_count = request.query_params.get("count", "100")
+            start_idx = int(raw_start) if str(raw_start).isdigit() else 1
+            count_val = int(raw_count) if str(raw_count).isdigit() else 100
+            result = scim_list_users(
+                org=org,
+                filter_expr=str(request.query_params.get("filter") or ""),
+                start_index=start_idx,
+                count=count_val,
+            )
+            return Response(result, content_type="application/scim+json")
+        except SCIMProvisioningError as exc:
+            return Response(
+                exc.as_scim_payload(),
+                status=exc.status_code,
+                content_type="application/scim+json",
+            )
+
+    @extend_schema(
+        operation_id="v1_organizations_scim_v2_users_create",
+        request={"application/json": {"type": "object"}},
+        responses={201: {"type": "object"}, 200: {"type": "object"}},
+    )
+    def post(self, request: Request, org_id: str) -> Response:
+        try:
+            org, sso_config = authenticate_scim_bearer(request, org_id)
+            if not isinstance(request.data, dict):
+                raise SCIMProvisioningError(
+                    "SCIM request body must be a JSON object.",
+                    status_code=400,
+                    scim_type="invalidSyntax",
+                )
+            ip_val, ua = _client_meta(request)
+            resource, created = scim_provision_user(
+                org=org,
+                sso_config=sso_config,
+                payload=request.data,
+                ip_address=ip_val,
+                user_agent=ua,
+            )
+            http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+            return Response(
+                resource,
+                status=http_status,
+                content_type="application/scim+json",
+            )
+        except SCIMProvisioningError as exc:
+            return Response(
+                exc.as_scim_payload(),
+                status=exc.status_code,
+                content_type="application/scim+json",
+            )
+
+
+class OrganizationSCIMUserDetailView(APIView):
+    """RFC 7643/7644 SCIM 2.0 ``/scim/v2/Users/<member_id>`` retrieve, update, and offboarding."""
+
+    authentication_classes: list[Any] = []
+    permission_classes = [AllowAny]
+    throttle_classes: list[Any] = []
+
+    @extend_schema(
+        operation_id="v1_organizations_scim_v2_users_retrieve",
+        responses={200: {"type": "object"}, 404: {"type": "object"}},
+    )
+    def get(self, request: Request, org_id: str, member_id: str) -> Response:
+        try:
+            org, _sso_config = authenticate_scim_bearer(request, org_id)
+            resource = scim_get_user(org=org, member_id=str(member_id))
+            return Response(resource, content_type="application/scim+json")
+        except SCIMProvisioningError as exc:
+            return Response(
+                exc.as_scim_payload(),
+                status=exc.status_code,
+                content_type="application/scim+json",
+            )
+
+    @extend_schema(
+        request={"application/json": {"type": "object"}},
+        responses={200: {"type": "object"}},
+    )
+    def put(self, request: Request, org_id: str, member_id: str) -> Response:
+        return self._modify(request, org_id=org_id, member_id=str(member_id), is_patch=False)
+
+    @extend_schema(
+        request={"application/json": {"type": "object"}},
+        responses={200: {"type": "object"}},
+    )
+    def patch(self, request: Request, org_id: str, member_id: str) -> Response:
+        return self._modify(request, org_id=org_id, member_id=str(member_id), is_patch=True)
+
+    def _modify(
+        self,
+        request: Request,
+        *,
+        org_id: str,
+        member_id: str,
+        is_patch: bool,
+    ) -> Response:
+        try:
+            org, sso_config = authenticate_scim_bearer(request, org_id)
+            if not isinstance(request.data, dict):
+                raise SCIMProvisioningError(
+                    "SCIM request body must be a JSON object.",
+                    status_code=400,
+                    scim_type="invalidSyntax",
+                )
+            ip_val, ua = _client_meta(request)
+            resource = scim_update_user(
+                org=org,
+                sso_config=sso_config,
+                member_id=member_id,
+                payload=request.data,
+                is_patch=is_patch,
+                ip_address=ip_val,
+                user_agent=ua,
+            )
+            return Response(
+                resource, status=status.HTTP_200_OK, content_type="application/scim+json"
+            )
+        except SCIMProvisioningError as exc:
+            return Response(
+                exc.as_scim_payload(),
+                status=exc.status_code,
+                content_type="application/scim+json",
+            )
+
+    @extend_schema(responses={204: None, 404: {"type": "object"}})
+    def delete(self, request: Request, org_id: str, member_id: str) -> Response:
+        try:
+            org, _sso_config = authenticate_scim_bearer(request, org_id)
+            ip_val, ua = _client_meta(request)
+            scim_delete_user(
+                org=org,
+                member_id=str(member_id),
+                ip_address=ip_val,
+                user_agent=ua,
+            )
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except SCIMProvisioningError as exc:
+            return Response(
+                exc.as_scim_payload(),
+                status=exc.status_code,
+                content_type="application/scim+json",
+            )
 
 
 class ExplorerConsoleView(View):

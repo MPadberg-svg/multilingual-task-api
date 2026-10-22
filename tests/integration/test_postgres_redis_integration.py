@@ -28,8 +28,16 @@ from django_redis import get_redis_connection
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
+from apps.core.db_router import use_read_replica
 from apps.core.events import EventPublisher, broadcast_task_websocket_event
-from apps.core.models import Organization, OrganizationMember, OutboxEvent, WebhookEndpoint
+from apps.core.models import (
+    AIUsageLog,
+    Organization,
+    OrganizationMember,
+    OrganizationSSOConfig,
+    OutboxEvent,
+    WebhookEndpoint,
+)
 from apps.core.outbox import drain_outbox_batch
 from apps.core.rls import rls_context
 from apps.core.views import record_ai_token_usage
@@ -551,3 +559,110 @@ def test_postgres_pg_trgm_gin_indexes_accelerate_multilingual_ilike_search() -> 
     assert resp.status_code == 200
     assert resp.json()["count"] == 1
     assert resp.json()["results"][0]["id"] == str(target_task.id)
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "replica"])
+def test_postgres_read_replica_routing_preserves_rls_tenant_isolation_and_v170_policies() -> None:
+    """
+    Verify on live PostgreSQL 16 with dual 'default' + 'replica' connections that:
+    1. FORCE ROW LEVEL SECURITY is active on core_organizationssoconfig and core_aiusagelog.
+    2. Read-replica routing opens a distinct PostgreSQL backend PID and synchronizes RLS
+       session GUCs onto connections['replica'] under NOBYPASSRLS role mltask_rls_app.
+    3. End-to-end /tasks/stats/, streaming /tasks/export/, and /finops/ execute against
+       the replica connection (X-Query-Target: replica) with zero cross-tenant leakage.
+    """
+    cache.clear()
+    owner_a = User.objects.create_user(email="pg-rep-a@example.com", password="pw")
+    owner_b = User.objects.create_user(email="pg-rep-b@example.com", password="pw")
+    org_a = Organization.objects.create(name="Replica Org A", slug="replica-org-a")
+    org_b = Organization.objects.create(name="Replica Org B", slug="replica-org-b")
+    OrganizationMember.objects.create(user=owner_a, organization=org_a, role="owner")
+    OrganizationMember.objects.create(user=owner_b, organization=org_b, role="owner")
+
+    sso_a = OrganizationSSOConfig.objects.create(
+        organization=org_a,
+        enabled=True,
+        oidc_issuer="https://idp-a.example.org",
+    )
+    sso_b = OrganizationSSOConfig.objects.create(
+        organization=org_b,
+        enabled=True,
+        oidc_issuer="https://idp-b.example.org",
+    )
+    task_a = Task.objects.create(user=owner_a, organization=org_a, status="completed")
+    task_a.set_current_language("en")
+    task_a.title = "Replica A Export Item"
+    task_a.save()
+    task_b = Task.objects.create(user=owner_b, organization=org_b, status="pending")
+
+    record_ai_token_usage(400, 100, str(org_a.id), user_id=str(owner_a.id))
+    record_ai_token_usage(900, 300, str(org_b.id), user_id=str(owner_b.id))
+
+    primary_conn = connections["default"]
+    replica_conn = connections["replica"]
+    try:
+        with primary_conn.cursor() as p_cur, replica_conn.cursor() as r_cur:
+            p_cur.execute("SELECT pg_backend_pid()")
+            r_cur.execute("SELECT pg_backend_pid()")
+            assert p_cur.fetchone()[0] != r_cur.fetchone()[0]
+
+            p_cur.execute("""
+                SELECT relname, relrowsecurity, relforcerowsecurity
+                FROM pg_class
+                WHERE relname IN ('core_organizationssoconfig', 'core_aiusagelog')
+                ORDER BY relname
+                """)
+            assert p_cur.fetchall() == [
+                ("core_aiusagelog", True, True),
+                ("core_organizationssoconfig", True, True),
+            ]
+
+            r_cur.execute("SET ROLE mltask_rls_app")
+            try:
+                with rls_context(organization_id=str(org_a.id)), use_read_replica() as target:
+                    assert target == "replica"
+                    rep_tasks = Task.objects.all()
+                    assert rep_tasks.db == "replica"
+                    assert [str(t.id) for t in rep_tasks] == [str(task_a.id)]
+                    assert str(task_b.id) not in {str(t.id) for t in rep_tasks}
+
+                    rep_sso = OrganizationSSOConfig.objects.all()
+                    assert rep_sso.db == "replica"
+                    assert [str(s.id) for s in rep_sso] == [str(sso_a.id)]
+                    assert str(sso_b.id) not in {str(s.id) for s in rep_sso}
+
+                    rep_logs = AIUsageLog.objects.all()
+                    assert rep_logs.db == "replica"
+                    assert rep_logs.count() == 1
+                    assert str(rep_logs.first().organization_id) == str(org_a.id)
+            finally:
+                r_cur.execute("RESET ROLE")
+
+        token_a = str(RefreshToken.for_user(owner_a).access_token)
+        client_a = APIClient()
+        client_a.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {token_a}",
+            HTTP_X_ORGANIZATION_ID=str(org_a.id),
+        )
+
+        stats_resp = client_a.get("/api/v1/tasks/stats/")
+        assert stats_resp.status_code == 200
+        assert stats_resp.headers["X-Query-Target"] == "replica"
+        assert stats_resp.json()["total_tasks"] == 1
+
+        export_resp = client_a.get("/api/v1/tasks/export/?export_format=jsonl")
+        assert export_resp.status_code == 200
+        assert export_resp.headers["X-Query-Target"] == "replica"
+        lines = [
+            json.loads(line)
+            for line in b"".join(export_resp.streaming_content).decode("utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [row["id"] for row in lines] == [str(task_a.id)]
+
+        finops_resp = client_a.get(f"/api/v1/organizations/{org_a.id}/finops/")
+        assert finops_resp.status_code == 200
+        assert finops_resp.headers["X-Query-Target"] == "replica"
+        assert finops_resp.json()["current_usage"]["tokens_used"] == 500
+    finally:
+        connections.close_all()

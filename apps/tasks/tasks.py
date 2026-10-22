@@ -21,6 +21,7 @@ from celery import shared_task
 
 from apps.ai_assist.services import AIService
 from apps.core.events import broadcast_task_websocket_event
+from apps.core.finops import AIBudgetExceededError
 from apps.core.models import AuditLog, Organization, WebhookEndpoint
 from apps.core.outbox import (
     drain_outbox_batch,
@@ -108,6 +109,13 @@ def generate_task_translations(
             logger.info("Translations generated for task %s", task_id)
             return result
 
+        except AIBudgetExceededError as exc:
+            logger.warning(
+                "Skipping auto-translation for task %s due to exhausted org AI budget: %s",
+                task_id,
+                exc,
+            )
+            return {}
         except Exception as exc:
             logger.error("Translation generation failed: %s", exc)
             raise self.retry(exc=exc)

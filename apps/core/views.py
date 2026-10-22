@@ -24,6 +24,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.core.finops import record_org_ai_spend_and_alerts
 from apps.core.throttling import HealthCheckAnonRateThrottle
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,10 @@ def record_ai_token_usage(
     prompt_tokens: int,
     completion_tokens: int,
     organization_id: str | None = None,
+    *,
+    user_id: str | None = None,
+    operation: str = "chat.completions",
+    model_name: str | None = None,
 ) -> None:
     """Record global and per-organization OpenAI token and estimated USD cost telemetry."""
     p_tok = max(0, int(prompt_tokens))
@@ -108,6 +113,15 @@ def record_ai_token_usage(
             increment_metric(f"{prefix}:completion_tokens", c_tok)
         if cost_nanousd:
             increment_metric(f"{prefix}:cost_nanousd", cost_nanousd)
+        record_org_ai_spend_and_alerts(
+            organization_id=organization_id,
+            prompt_tokens=p_tok,
+            completion_tokens=c_tok,
+            cost_nanousd=cost_nanousd,
+            user_id=user_id,
+            operation=operation,
+            model_name=model_name,
+        )
 
 
 def get_org_ai_usage(organization_id: str) -> dict[str, int | float]:

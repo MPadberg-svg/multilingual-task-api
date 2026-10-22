@@ -22,6 +22,11 @@ SIMPLE_JWT["SIGNING_KEY"] = config("JWT_SIGNING_KEY", default="") or SECRET_KEY 
 # Close connections immediately after each request/thread so pytest-django
 # transaction=True teardowns and test-DB drops never hit open-socket locks.
 DATABASES["default"]["CONN_MAX_AGE"] = 0  # type: ignore[index]  # noqa: F405
+DATABASES["replica"] = {  # noqa: F405
+    **DATABASES["default"],  # noqa: F405
+    "CONN_MAX_AGE": 0,
+    "TEST": {"MIRROR": "default"},
+}
 
 # Fail loudly if Redis breaks during integration tests
 CACHES["default"]["OPTIONS"]["IGNORE_EXCEPTIONS"] = False  # type: ignore[index]  # noqa: F405
