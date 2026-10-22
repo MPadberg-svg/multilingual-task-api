@@ -1,77 +1,107 @@
-"""Redis pub/sub event publisher for real-time task, AI, and audit events.
+"""Redis pub/sub & Django Channels event publisher for task, AI, and audit events.
 
 Provides:
-    - ``EventPublisher``: Singleton publisher using Django-Redis connection.
-      Publishes JSON messages to scoped channels and persists audit events
-      to the database.
-
-Channel naming convention:
-    ``mltask:events:{org_id}:{event_type}``
+    - ``EventPublisher``: Singleton publisher that emits JSON messages to Redis
+      Pub/Sub channels (``mltask:events:{org_id}:{event_type}``), forwards
+      real-time task events to Django Channels WebSocket groups, and persists
+      audit trails to ``AuditLog``.
 """
+
+from __future__ import annotations
 
 import json
 import logging
+import uuid
+from typing import Any
 
 from django.utils import timezone
 
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 from django_redis import get_redis_connection
 
 logger = logging.getLogger(__name__)
 
 
-
 class _NullRedis:
     """Stub Redis client used when no Redis backend is available (e.g. tests)."""
 
-    def publish(self, *args, **kwargs):
+    def publish(self, *args: Any, **kwargs: Any) -> int:
         return 0
 
-    def ping(self, *args, **kwargs):
+    def ping(self, *args: Any, **kwargs: Any) -> bool:
         return True
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> Any:
         return lambda *a, **kw: None
 
 
-class EventPublisher:
-    """Singleton Redis pub/sub publisher for domain events.
+def broadcast_task_websocket_event(
+    org_id: str,
+    action: str,
+    task_data: dict[str, Any],
+) -> None:
+    """Forward a task lifecycle event to authorized Django Channels WebSocket groups.
 
-    Automatically initialises the Redis connection on first instantiation.
+    Dispatches ``task_deleted`` for deletion events and ``task_update`` for
+    creations/updates to:
+        - ``org_{org_id}`` (only when ``org_id`` is a specific tenant UUID, never ``global``)
+        - ``user_{user_id}`` (owner/actor channel)
+        - ``task_{task_id}`` (task-specific subscribers)
     """
+    try:
+        channel_layer = get_channel_layer()
+        if channel_layer is None:
+            return
 
-    _instance = None
+        ws_event_type = "task_deleted" if action == "deleted" else "task_update"
+        payload_data = {"action": action, **task_data}
+        event_message = {
+            "type": ws_event_type,
+            "event_id": str(uuid.uuid4()),
+            "data": payload_data,
+        }
 
-    def __new__(cls):
-        """Ensure singleton with lazy Redis connection.
+        target_groups: list[str] = []
+        if org_id and org_id != "global":
+            target_groups.append(f"org_{org_id}")
+        user_id = task_data.get("user_id")
+        if user_id:
+            target_groups.append(f"user_{user_id}")
+        task_id = task_data.get("id")
+        if task_id:
+            target_groups.append(f"task_{task_id}")
 
-        Falls back to a no-op stub when the configured cache backend does not
-        expose a native Redis connection (e.g. LocMemCache in testing).
-        """
+        send = async_to_sync(channel_layer.group_send)
+        for group_name in dict.fromkeys(target_groups):
+            send(group_name, event_message)
+    except Exception:
+        logger.warning("Failed to broadcast task event to Channels layer", exc_info=True)
+
+
+class EventPublisher:
+    """Singleton Redis pub/sub & Channels publisher for domain events."""
+
+    _instance: "EventPublisher | None" = None
+    redis: Any
+
+    def __new__(cls) -> "EventPublisher":
+        """Ensure singleton with lazy Redis connection."""
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
+            instance = super().__new__(cls)
             try:
-                cls._instance.redis = get_redis_connection("default")
+                instance.redis = get_redis_connection("default")
             except (NotImplementedError, Exception):
-                cls._instance.redis = _NullRedis()
+                instance.redis = _NullRedis()
+            cls._instance = instance
         return cls._instance
 
     def _get_channel(self, org_id: str, event_type: str) -> str:
-        """Build a scoped Redis channel name.
-
-        Args:
-            org_id: Organization UUID or ``global`` for unscoped events.
-            event_type: Event category (``tasks``, ``ai``, ``audit``).
-
-        Returns:
-            Channel name string.
-        """
+        """Build a scoped Redis channel name."""
         return f"mltask:events:{org_id}:{event_type}"
 
     def _safe_publish(self, channel: str, message: str) -> None:
-        """Publish to Redis with graceful error handling.
-
-        Logs a warning if Redis is unavailable instead of crashing.
-        """
+        """Publish to Redis with graceful error handling."""
         try:
             self.redis.publish(channel, message)
         except Exception:
@@ -81,15 +111,9 @@ class EventPublisher:
         self,
         org_id: str,
         action: str,
-        task_data: dict,
+        task_data: dict[str, Any],
     ) -> None:
-        """Publish a task lifecycle event.
-
-        Args:
-            org_id: Organization scope.
-            action: Lifecycle action (``created``, ``updated``, ``deleted``).
-            task_data: Serialized task payload.
-        """
+        """Publish a task lifecycle event to Redis Pub/Sub and Django Channels."""
         message = json.dumps(
             {
                 "type": "task",
@@ -99,20 +123,15 @@ class EventPublisher:
             }
         )
         self._safe_publish(self._get_channel(org_id, "tasks"), message)
+        broadcast_task_websocket_event(org_id, action, task_data)
 
     def publish_ai_event(
         self,
         org_id: str,
         action: str,
-        ai_data: dict,
+        ai_data: dict[str, Any],
     ) -> None:
-        """Publish an AI assist event.
-
-        Args:
-            org_id: Organization scope.
-            action: AI action type.
-            ai_data: Serialized AI payload.
-        """
+        """Publish an AI assist event."""
         message = json.dumps(
             {
                 "type": "ai",
@@ -127,15 +146,9 @@ class EventPublisher:
         self,
         org_id: str,
         action: str,
-        audit_data: dict,
+        audit_data: dict[str, Any],
     ) -> None:
-        """Publish an audit event and persist it to the database.
-
-        Args:
-            org_id: Organization scope.
-            action: Audit action type.
-            audit_data: Serialized audit payload.
-        """
+        """Publish an audit event and persist it to the database."""
         message = json.dumps(
             {
                 "type": "audit",
@@ -147,15 +160,8 @@ class EventPublisher:
         self._safe_publish(self._get_channel(org_id, "audit"), message)
         self._persist_audit(org_id, action, audit_data)
 
-    def _persist_audit(self, org_id: str, action: str, audit_data: dict) -> None:
-        """Persist an audit event to the ``AuditLog`` model.
-
-        Args:
-            org_id: Organization UUID.
-            action: Audit action type.
-            audit_data: Payload dict with optional ``resource_type``,
-                ``resource_id``, ``ip``, ``user_agent``, and extra metadata.
-        """
+    def _persist_audit(self, org_id: str, action: str, audit_data: dict[str, Any]) -> None:
+        """Persist an audit event to the ``AuditLog`` model."""
         from apps.core.models import AuditLog, Organization
 
         try:
