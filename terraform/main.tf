@@ -282,6 +282,11 @@ resource "aws_cloudwatch_log_group" "api" {
 
 locals {
   redis_tls_base_url = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+  secret_arns = compact([
+    var.django_secret_key_arn,
+    var.db_password_secret_arn,
+    var.openai_api_key_secret_arn,
+  ])
   shared_env = [
     { name = "DJANGO_SETTINGS_MODULE", value = "config.settings.production" },
     { name = "ALLOWED_HOSTS", value = join(",", compact([var.domain_name, aws_lb.main.dns_name])) },
@@ -299,6 +304,31 @@ locals {
     var.db_password_secret_arn != "" ? jsonencode({ name = "POSTGRES_PASSWORD", valueFrom = var.db_password_secret_arn }) : "",
     var.openai_api_key_secret_arn != "" ? jsonencode({ name = "OPENAI_API_KEY", valueFrom = var.openai_api_key_secret_arn }) : "",
   ])
+}
+
+resource "aws_iam_role_policy" "ecs_task_execution_secrets" {
+  count = length(local.secret_arns) > 0 ? 1 : 0
+  name  = "${var.project_name}-ecs-execution-secrets"
+  role  = aws_iam_role.ecs_task_execution.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "ssm:GetParameters",
+        ]
+        Resource = local.secret_arns
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:Decrypt"]
+        Resource = "*"
+      },
+    ]
+  })
 }
 
 resource "aws_ecs_task_definition" "api" {

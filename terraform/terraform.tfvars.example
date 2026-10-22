@@ -1,0 +1,33 @@
+# Copy to terraform/production.tfvars (gitignored) and populate real values before running:
+#   terraform init
+#   terraform validate
+#   terraform plan -var-file="production.tfvars" -out=tfplan
+
+aws_region   = "us-east-1"
+project_name = "multilingual-task-api"
+environment  = "production"
+
+# Immutable container image tag (e.g. Git commit SHA pushed to ECR)
+image_tag = "v1.1.0"
+
+# Custom API domain & ACM TLS certificate ARN (enables HTTPS:443 + HTTP->HTTPS 301 redirect)
+domain_name         = "api.example.com"
+acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+
+# Database sizing & bootstrap master password (pass via TF_VAR_db_password in CI)
+db_instance_class    = "db.t3.micro"
+db_allocated_storage = 20
+db_name              = "multilingual_task_api"
+db_username          = "postgres"
+db_password          = "CHANGE_ME_STRONG_RDS_PASSWORD"
+
+# Redis & ECS Fargate sizing
+redis_node_type   = "cache.t3.micro"
+ecs_desired_count = 2
+ecs_task_cpu      = "512"
+ecs_task_memory   = "1024"
+
+# Secrets Manager / SSM Parameter ARNs injected into ECS API & Celery containers
+django_secret_key_arn     = "arn:aws:secretsmanager:us-east-1:123456789012:secret:multilingual-task-api/production/SECRET_KEY"
+db_password_secret_arn    = "arn:aws:secretsmanager:us-east-1:123456789012:secret:multilingual-task-api/production/POSTGRES_PASSWORD"
+openai_api_key_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:multilingual-task-api/production/OPENAI_API_KEY"
