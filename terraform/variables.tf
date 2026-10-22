@@ -18,7 +18,7 @@ variable "environment" {
 variable "image_tag" {
   description = "Immutable container image tag (e.g. git SHA or release tag)"
   type        = string
-  default     = "v1.4.0"
+  default     = "v1.5.0"
 }
 
 variable "domain_name" {

@@ -60,6 +60,7 @@ MIDDLEWARE: list[str] = [
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.core.middleware.TenantMiddleware",
+    "apps.core.rls.PostgresRLSMiddleware",
     "apps.core.middleware.TenantPermissionMiddleware",
     "apps.core.idempotency.IdempotencyKeyMiddleware",
     "apps.core.middleware.RequestLoggingMiddleware",
@@ -152,7 +153,7 @@ MEDIA_ROOT: Path = BASE_DIR / "media"
 REST_FRAMEWORK: dict[str, Any] = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
         "apps.core.authentication.OrganizationAPIKeyAuthentication",
-        "rest_framework_simplejwt.authentication.JWTAuthentication",
+        "apps.core.authentication.CachedJWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.IsAuthenticated",
@@ -206,10 +207,11 @@ SPECTACULAR_SETTINGS: dict[str, Any] = {
     "DESCRIPTION": (
         "Production-grade multi-tenant REST & WebSocket API for multilingual RLHF task "
         "orchestration, atomic annotation leasing, inter-annotator consensus, OpenAI FinOps "
-        "telemetry, scoped M2M API keys, HMAC-signed webhooks, keyset cursor pagination, "
+        "telemetry, scoped M2M API keys, HMAC-signed webhooks, transactional outbox relay, "
+        "PostgreSQL Row-Level Security (RLS), keyset cursor pagination, "
         "and W3C/OTLP distributed tracing."
     ),
-    "VERSION": "1.4.0",
+    "VERSION": "1.5.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
 
@@ -282,6 +284,14 @@ CELERY_TIMEZONE: str = TIME_ZONE
 CELERY_ENABLE_UTC: bool = True
 CELERY_TASK_TRACK_STARTED: bool = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP: bool = True
+
+CELERY_BEAT_SCHEDULE: dict[str, dict[str, Any]] = {
+    "drain-transactional-outbox": {
+        "task": "apps.tasks.tasks.drain_outbox_events",
+        "schedule": 15.0,
+        "kwargs": {"batch_size": 50},
+    },
+}
 
 # =============================================================================
 # Channels (WebSocket)

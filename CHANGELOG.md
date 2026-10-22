@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.5.0] — 2026-10-22
+
+### Added
+- **Transactional Outbox Pattern for Webhooks & Pub/Sub (`apps/core/models.py`, `apps/core/outbox.py`, `apps/tasks/tasks.py`, `apps/tasks/views.py`, `apps/tasks/consensus.py`, `config/settings/base.py`)**:
+  - Added indexed `OutboxEvent` model (`core_outbox_pending_idx`) written atomically inside business `transaction.atomic()` blocks across task creation, bulk ingestion, status completion, IAA consensus auto-completion, adjudication, and async translation—guaranteeing zero phantom webhooks on rollback and zero lost events during Redis/Celery broker blips.
+  - Added `drain_outbox_batch` / `drain_outbox_events` (`SELECT ... FOR UPDATE SKIP LOCKED` concurrent worker relay, stale `processing` reclamation, exponential retry backoff up to `MAX_OUTBOX_ATTEMPTS = 10`, preserved W3C `traceparent` distributed trace linkage) plus a 15-second `CELERY_BEAT_SCHEDULE` sweep.
+- **PostgreSQL 16 Row-Level Security (RLS) Defense-in-Depth (`apps/core/rls.py`, `apps/tasks/migrations/0005_postgres_rls_policies.py`, `tests/integration/test_postgres_redis_integration.py`)**:
+  - Enabled `ENABLE ROW LEVEL SECURITY` + `FORCE ROW LEVEL SECURITY` policies (`USING` & `WITH CHECK`) across `tasks_task`, `core_organizationapikey`, `core_webhookendpoint`, and `core_outboxevent`, alongside a dedicated `mltask_rls_app` (`NOSUPERUSER NOBYPASSRLS`) runtime role.
+  - Added `PostgresRLSMiddleware`, `rls_context`, and `rls_bypass` synchronizing `app.rls_enforced`, `app.current_organization_id`, `app.current_user_id`, and `app.rls_bypass` lazily via memoized PostgreSQL session `set_config` calls with automatic connection-pool reset on exit.
+- **Single-Query JWT Request Memoization & Node 24 GitHub Actions Modernization (`apps/core/authentication.py`, `apps/core/middleware.py`, `.github/workflows/ci.yml`, `.github/workflows/deploy.yml`)**:
+  - Added `CachedJWTAuthentication` (`CachedJWTScheme`) and request-scoped principal memoization eliminating duplicate `SELECT core_user` queries per JWT request (`GET /api/v1/tasks/` reduced from 5 to 4 SQL queries).
+  - Upgraded CI and ECS deploy workflows to native Node 24 actions (`actions/checkout@v6`, `actions/setup-python@v6`, `actions/upload-artifact@v6`, `hashicorp/setup-terraform@v4`, `codecov/codecov-action@v6`, `aws-actions/configure-aws-credentials@v6`).
+
+---
+
 ## [1.4.0] — 2026-10-22
 
 ### Added

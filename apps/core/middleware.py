@@ -112,6 +112,11 @@ def resolve_authenticated_user(request: HttpRequest) -> Any:
 
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
+        cached_jwt_user = getattr(request, "_resolved_jwt_user", None)
+        if cached_jwt_user is not None:
+            request.user = cached_jwt_user  # type: ignore[assignment]
+            return cached_jwt_user
+
         from rest_framework_simplejwt.authentication import JWTAuthentication
         from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 
@@ -123,6 +128,7 @@ def resolve_authenticated_user(request: HttpRequest) -> Any:
                     jwt_user, "is_active", True
                 ):
                     request.user = jwt_user  # type: ignore[assignment]
+                    setattr(request, "_resolved_jwt_user", jwt_user)
                     setattr(request, "_jwt_token", validated_token)
                     return jwt_user
         except (InvalidToken, TokenError, Exception):

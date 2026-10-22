@@ -16,6 +16,7 @@ from apps.core.models import (
     Organization,
     OrganizationAPIKey,
     OrganizationMember,
+    OutboxEvent,
     WebhookDelivery,
     WebhookEndpoint,
 )
@@ -195,4 +196,35 @@ class WebhookDeliveryAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
         "success",
         "error_message",
         "delivered_at",
+    )
+
+
+@admin.register(OutboxEvent)
+class OutboxEventAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    """Read-only admin view for transactional outbox events."""
+
+    list_display = (
+        "event_type",
+        "topic",
+        "organization",
+        "status",
+        "attempts",
+        "next_attempt_at",
+        "dispatched_at",
+        "created_at",
+    )
+    list_filter = ("topic", "status", "event_type")
+    readonly_fields = (
+        "id",
+        "organization",
+        "topic",
+        "event_type",
+        "payload",
+        "traceparent",
+        "status",
+        "attempts",
+        "next_attempt_at",
+        "dispatched_at",
+        "last_error",
+        "created_at",
     )

@@ -220,6 +220,8 @@ def dispatch_organization_webhooks(
     organization_id: str | None,
     event_type: str,
     payload: dict[str, Any],
+    *,
+    raise_on_broker_error: bool = False,
 ) -> int:
     """Enqueue Celery webhook deliveries for all matching active organization endpoints."""
     if not organization_id or organization_id == "global":
@@ -247,5 +249,7 @@ def dispatch_organization_webhooks(
             deliver_webhook_event.delay(ep_id, event_type, payload)
             dispatched += 1
         except Exception:
+            if raise_on_broker_error:
+                raise
             logger.warning("Unable to enqueue webhook delivery for endpoint %s", ep_id)
     return dispatched

@@ -33,6 +33,7 @@ VALID_WEBHOOK_EVENTS: frozenset[str] = frozenset(
         "task.completed",
         "task.deleted",
         "task.consensus_reached",
+        "task.translated",
         "webhook.ping",
     }
 )
@@ -395,3 +396,62 @@ class AuditLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.action} {self.resource_type} by {self.user} at {self.created_at}"
+
+
+class OutboxEvent(models.Model):
+    """Transactional Outbox record guaranteeing at-least-once webhook and pub/sub delivery."""
+
+    TOPIC_CHOICES = [
+        ("webhook", "Webhook"),
+        ("pubsub", "Pub/Sub & WebSocket"),
+    ]
+
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("processing", "Processing"),
+        ("dispatched", "Dispatched"),
+        ("failed", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="outbox_events",
+        null=True,
+        blank=True,
+    )
+    topic = models.CharField(
+        max_length=20,
+        choices=TOPIC_CHOICES,
+        default="webhook",
+    )
+    event_type = models.CharField(max_length=64)
+    payload = models.JSONField(default=dict)
+    traceparent = models.CharField(max_length=128, blank=True, default="")
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="pending",
+    )
+    attempts = models.PositiveSmallIntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now)
+    dispatched_at = models.DateTimeField(null=True, blank=True)
+    last_error = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["created_at"]
+        indexes = [
+            models.Index(
+                fields=["status", "next_attempt_at", "created_at"],
+                name="core_outbox_pending_idx",
+            ),
+            models.Index(
+                fields=["organization", "-created_at"],
+                name="core_outbox_org_created_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"OutboxEvent({self.topic}:{self.event_type} [{self.status}])"

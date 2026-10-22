@@ -10,12 +10,14 @@ from __future__ import annotations
 import json
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
-from django.db import connections, transaction
+from django.db import DatabaseError, connections, transaction
 
 import pytest
 from asgiref.sync import sync_to_async
@@ -26,7 +28,9 @@ from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
 from apps.core.events import EventPublisher, broadcast_task_websocket_event
-from apps.core.models import Organization, OrganizationMember
+from apps.core.models import Organization, OrganizationMember, OutboxEvent, WebhookEndpoint
+from apps.core.outbox import drain_outbox_batch
+from apps.core.rls import rls_context
 from apps.core.views import record_ai_token_usage
 from apps.tasks.models import Task
 from config.asgi import application
@@ -338,3 +342,140 @@ async def test_live_redis_pubsub_and_channels_redis_websocket_broadcast() -> Non
     finally:
         await communicator.disconnect()
         await channel_layer.flush()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_postgres_rls_enforces_storage_layer_tenant_isolation_under_nobypassrls_role() -> None:
+    """
+    Switch into PostgreSQL's non-superuser NOBYPASSRLS role (mltask_rls_app) and verify
+    that UNFILTERED ORM queries and raw SQL INSERTs are physically isolated per tenant
+    by PostgreSQL 16 Row-Level Security policies.
+    """
+    owner_a = User.objects.create_user(email="rls-owner-a@example.com", password="pw")
+    org_a = Organization.objects.create(name="RLS Org A", slug="rls-org-a")
+    OrganizationMember.objects.create(user=owner_a, organization=org_a, role="owner")
+    task_a = Task.objects.create(user=owner_a, organization=org_a, status="pending")
+    wh_a = WebhookEndpoint.objects.create(
+        organization=org_a,
+        created_by=owner_a,
+        url="https://a.example.org/wh",
+        secret="whsec_rls_a",
+        events=["task.created"],
+    )
+
+    owner_b = User.objects.create_user(email="rls-owner-b@example.com", password="pw")
+    org_b = Organization.objects.create(name="RLS Org B", slug="rls-org-b")
+    OrganizationMember.objects.create(user=owner_b, organization=org_b, role="owner")
+    task_b = Task.objects.create(user=owner_b, organization=org_b, status="pending")
+    wh_b = WebhookEndpoint.objects.create(
+        organization=org_b,
+        created_by=owner_b,
+        url="https://b.example.org/wh",
+        secret="whsec_rls_b",
+        events=["task.created"],
+    )
+
+    personal_task_a = Task.objects.create(user=owner_a, organization=None, status="pending")
+
+    conn = connections["default"]
+    with transaction.atomic():
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL ROLE mltask_rls_app")
+            cur.execute(
+                "SELECT current_user, rolsuper, rolbypassrls "
+                "FROM pg_roles WHERE rolname = current_user"
+            )
+            role_row = cur.fetchone()
+            assert role_row == ("mltask_rls_app", False, False)
+
+        # 1. Scoped to Org A: unfiltered Task.objects.all() & WebhookEndpoint.objects.all()
+        #    MUST return strictly Org A rows (hiding Org B AND personal non-org tasks)
+        with rls_context(organization_id=str(org_a.id), user_id=str(owner_a.id)):
+            visible_tasks = {str(pk) for pk in Task.objects.values_list("id", flat=True)}
+            assert str(task_a.id) in visible_tasks
+            assert str(task_b.id) not in visible_tasks
+            assert str(personal_task_a.id) not in visible_tasks
+
+            visible_webhooks = {
+                str(pk) for pk in WebhookEndpoint.objects.values_list("id", flat=True)
+            }
+            assert str(wh_a.id) in visible_webhooks
+            assert str(wh_b.id) not in visible_webhooks
+
+            # Cross-tenant raw INSERT into Org B while bound to Org A must be rejected by PG16 RLS
+            with pytest.raises(DatabaseError):
+                with transaction.atomic():
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            INSERT INTO tasks_task (
+                                id, user_id, organization_id, status, priority,
+                                required_annotations, consensus_choice, is_active,
+                                created_at, updated_at
+                            )
+                            VALUES (%s, %s, %s, 'pending', 'medium', 3, '', true, NOW(), NOW())
+                            """,
+                            [str(uuid.uuid4()), str(owner_a.id), str(org_b.id)],
+                        )
+
+        # 2. Unauthenticated enforced scope sees zero rows across protected tables
+        with rls_context(organization_id=None, user_id=None, enforced=True):
+            assert Task.objects.count() == 0
+            assert WebhookEndpoint.objects.count() == 0
+
+        # 3. User-scoped (no X-Organization-ID): sees own personal tasks + member orgs, never Org B
+        with rls_context(organization_id=None, user_id=str(owner_a.id), enforced=True):
+            user_visible = {str(pk) for pk in Task.objects.values_list("id", flat=True)}
+            assert str(personal_task_a.id) in user_visible
+            assert str(task_a.id) in user_visible
+            assert str(task_b.id) not in user_visible
+
+
+@pytest.mark.django_db(transaction=True)
+def test_postgres_outbox_concurrent_skip_locked_relay_drains_exactly_once() -> None:
+    """
+    4 concurrent outbox relay workers racing through a Barrier against 6 pending
+    OutboxEvent rows on PostgreSQL 16 must dispatch each event strictly once via
+    SELECT ... FOR UPDATE SKIP LOCKED with zero duplicate webhook fan-outs.
+    """
+    owner = User.objects.create_user(email="pg-outbox-owner@example.com", password="pw")
+    org = Organization.objects.create(name="PG Outbox Org", slug="pg-outbox-org")
+    OrganizationMember.objects.create(user=owner, organization=org, role="owner")
+    WebhookEndpoint.objects.create(
+        organization=org,
+        created_by=owner,
+        url="https://sink.example.org/pg-outbox",
+        secret="whsec_pg_outbox",
+        events=["task.completed"],
+    )
+
+    for seq in range(6):
+        OutboxEvent.objects.create(
+            organization=org,
+            topic="webhook",
+            event_type="task.completed",
+            payload={"seq": seq},
+        )
+
+    dispatched_seqs: list[int] = []
+    seq_lock = threading.Lock()
+    barrier = threading.Barrier(4)
+
+    def _record_delay(_ep_id: str, _ev_type: str, payload: dict[str, int]) -> None:
+        with seq_lock:
+            dispatched_seqs.append(int(payload["seq"]))
+
+    def _relay_worker(_idx: int) -> dict[str, int]:
+        try:
+            barrier.wait(timeout=5.0)
+            return drain_outbox_batch(batch_size=2)
+        finally:
+            connections.close_all()
+
+    with patch("apps.tasks.tasks.deliver_webhook_event.delay", side_effect=_record_delay):
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            worker_results = list(pool.map(_relay_worker, range(4)))
+
+    assert sum(r["dispatched"] for r in worker_results) == 6
+    assert sorted(dispatched_seqs) == [0, 1, 2, 3, 4, 5]
+    assert OutboxEvent.objects.filter(organization=org, status="dispatched").count() == 6

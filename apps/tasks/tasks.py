@@ -14,6 +14,7 @@ from typing import Any
 
 from django.conf import settings
 from django.core.mail import send_mail
+from django.db import transaction
 
 from celery import Task as CeleryTask
 from celery import shared_task
@@ -21,7 +22,9 @@ from celery import shared_task
 from apps.ai_assist.services import AIService
 from apps.core.events import broadcast_task_websocket_event
 from apps.core.models import AuditLog, Organization, WebhookEndpoint
-from apps.core.webhooks import deliver_webhook_sync, dispatch_organization_webhooks
+from apps.core.outbox import drain_outbox_batch, enqueue_outbox_event
+from apps.core.rls import rls_bypass
+from apps.core.webhooks import deliver_webhook_sync
 from apps.tasks.models import Task
 from apps.tasks.views import invalidate_task_caches_for_scopes
 
@@ -39,61 +42,71 @@ def generate_task_translations(
     Safely accesses existing per-language fields via ``safe_translation_getter``
     so missing translation rows never raise ``TranslationDoesNotExist``.
     """
-    try:
-        task = Task.objects.select_related("user", "organization").get(id=task_id)
-    except Task.DoesNotExist:
-        logger.warning("Task %s not found for translation", task_id)
-        return {}
+    with rls_bypass():
+        try:
+            task = Task.objects.select_related("user", "organization").get(id=task_id)
+        except Task.DoesNotExist:
+            logger.warning("Task %s not found for translation", task_id)
+            return {}
 
-    service = AIService()
-    try:
-        org_id_str = str(task.organization_id) if task.organization_id else None
-        call_kwargs = {"organization_id": org_id_str} if org_id_str else {}
-        result = service.suggest_task_translations(
-            user_id=str(task.user_id),
-            lang="en",
-            user_input=user_input,
-            **call_kwargs,
-        )
+        service = AIService()
+        try:
+            org_id_str = str(task.organization_id) if task.organization_id else None
+            call_kwargs = {"organization_id": org_id_str} if org_id_str else {}
+            result = service.suggest_task_translations(
+                user_id=str(task.user_id),
+                lang="en",
+                user_input=user_input,
+                **call_kwargs,
+            )
 
-        for lang in ("en", "es", "fr"):
-            if lang in result and isinstance(result[lang], dict):
-                existing_title = (
-                    task.safe_translation_getter("title", language_code=lang, any_language=False)
-                    or ""
-                )
-                existing_desc = (
-                    task.safe_translation_getter(
-                        "description", language_code=lang, any_language=False
+            event_payload = {
+                "id": str(task.id),
+                "languages": [k for k in ("en", "es", "fr") if k in result],
+                "user_id": str(task.user_id),
+            }
+
+            with transaction.atomic():
+                for lang in ("en", "es", "fr"):
+                    if lang in result and isinstance(result[lang], dict):
+                        existing_title = (
+                            task.safe_translation_getter(
+                                "title", language_code=lang, any_language=False
+                            )
+                            or ""
+                        )
+                        existing_desc = (
+                            task.safe_translation_getter(
+                                "description", language_code=lang, any_language=False
+                            )
+                            or ""
+                        )
+                        task.set_current_language(lang)
+                        task.title = result[lang].get("title") or existing_title
+                        task.description = result[lang].get("description", existing_desc)
+                        task.save()
+
+                if org_id_str:
+                    enqueue_outbox_event(
+                        organization_id=org_id_str,
+                        event_type="task.translated",
+                        payload=event_payload,
                     )
-                    or ""
-                )
-                task.set_current_language(lang)
-                task.title = result[lang].get("title") or existing_title
-                task.description = result[lang].get("description", existing_desc)
-                task.save()
 
-        scopes = [str(task.user_id)]
-        if task.organization_id:
-            scopes.append(f"org:{task.organization_id}")
-        invalidate_task_caches_for_scopes(scopes, task_id=str(task.id))
+            scopes = [str(task.user_id)]
+            if task.organization_id:
+                scopes.append(f"org:{task.organization_id}")
+            invalidate_task_caches_for_scopes(scopes, task_id=str(task.id))
 
-        ws_org = org_id_str or "global"
-        event_payload = {
-            "id": str(task.id),
-            "languages": [k for k in ("en", "es", "fr") if k in result],
-            "user_id": str(task.user_id),
-        }
-        broadcast_task_websocket_event(ws_org, "translated", event_payload)
-        if org_id_str:
-            dispatch_organization_webhooks(org_id_str, "task.translated", event_payload)
+            ws_org = org_id_str or "global"
+            broadcast_task_websocket_event(ws_org, "translated", event_payload)
 
-        logger.info("Translations generated for task %s", task_id)
-        return result
+            logger.info("Translations generated for task %s", task_id)
+            return result
 
-    except Exception as exc:
-        logger.error("Translation generation failed: %s", exc)
-        raise self.retry(exc=exc)
+        except Exception as exc:
+            logger.error("Translation generation failed: %s", exc)
+            raise self.retry(exc=exc)
 
 
 @shared_task
@@ -183,20 +196,30 @@ def deliver_webhook_event(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Deliver a signed outbound webhook event with exponential retry backoff."""
-    try:
-        endpoint = WebhookEndpoint.objects.get(id=endpoint_id, is_active=True)
-    except WebhookEndpoint.DoesNotExist:
-        return {"delivered": False, "reason": "endpoint_inactive_or_missing"}
+    with rls_bypass():
+        try:
+            endpoint = WebhookEndpoint.objects.get(id=endpoint_id, is_active=True)
+        except WebhookEndpoint.DoesNotExist:
+            return {"delivered": False, "reason": "endpoint_inactive_or_missing"}
 
-    delivery = deliver_webhook_sync(endpoint, event_type, payload)
-    if not delivery.success and endpoint.is_active:
-        backoff = min(300, 15 * (2**self.request.retries))
-        raise self.retry(
-            exc=RuntimeError(delivery.error_message or "Webhook delivery failed"),
-            countdown=backoff,
-        )
-    return {
-        "delivered": delivery.success,
-        "delivery_id": str(delivery.id),
-        "status": delivery.response_status,
-    }
+        delivery = deliver_webhook_sync(endpoint, event_type, payload)
+        if not delivery.success and endpoint.is_active:
+            backoff = min(300, 15 * (2**self.request.retries))
+            raise self.retry(
+                exc=RuntimeError(delivery.error_message or "Webhook delivery failed"),
+                countdown=backoff,
+            )
+        return {
+            "delivered": delivery.success,
+            "delivery_id": str(delivery.id),
+            "status": delivery.response_status,
+        }
+
+
+@shared_task
+def drain_outbox_events(
+    batch_size: int = 50,
+    event_id: str | None = None,
+) -> dict[str, int]:
+    """Drain pending Transactional Outbox events via ``FOR UPDATE SKIP LOCKED``."""
+    return drain_outbox_batch(batch_size=batch_size, event_id=event_id)

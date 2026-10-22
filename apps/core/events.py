@@ -100,11 +100,19 @@ class EventPublisher:
         """Build a scoped Redis channel name."""
         return f"mltask:events:{org_id}:{event_type}"
 
-    def _safe_publish(self, channel: str, message: str) -> None:
-        """Publish to Redis with graceful error handling."""
+    def _safe_publish(
+        self,
+        channel: str,
+        message: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> None:
+        """Publish to Redis with graceful error handling unless ``raise_on_error=True``."""
         try:
             self.redis.publish(channel, message)
         except Exception:
+            if raise_on_error:
+                raise
             logger.warning("Failed to publish to Redis channel %s", channel, exc_info=True)
 
     def publish_task_event(
@@ -112,6 +120,8 @@ class EventPublisher:
         org_id: str,
         action: str,
         task_data: dict[str, Any],
+        *,
+        raise_on_error: bool = False,
     ) -> None:
         """Publish a task lifecycle event to Redis Pub/Sub and Django Channels."""
         message = json.dumps(
@@ -122,7 +132,11 @@ class EventPublisher:
                 "timestamp": timezone.now().isoformat(),
             }
         )
-        self._safe_publish(self._get_channel(org_id, "tasks"), message)
+        self._safe_publish(
+            self._get_channel(org_id, "tasks"),
+            message,
+            raise_on_error=raise_on_error,
+        )
         broadcast_task_websocket_event(org_id, action, task_data)
 
     def publish_ai_event(
