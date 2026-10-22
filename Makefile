@@ -1,4 +1,4 @@
-.PHONY: up down build migrate seed test test-cov cache-flush lint format shell logs \
+.PHONY: up down build migrate seed test test-cov test-local cache-flush lint format shell logs \
         docker-clean locust-benchmark create-admin warm-cache setup security test-fast \
         locust-headless
 
@@ -72,15 +72,17 @@ locust-headless:
 
 lint:
 	flake8 apps/ config/ tests/ --max-line-length=100 --exclude=migrations
-	mypy apps/ --ignore-missing-imports
+	black --check --line-length=100 apps/ config/ tests/
+	isort --check-only apps/ config/ tests/
+	mypy apps/ config/
 
 format:
-	black apps/ config/ tests/
+	black --line-length=100 apps/ config/ tests/
 	isort apps/ config/ tests/
 
 security:
-	bandit -r apps/ -ll
-	safety check -r requirements.txt
+	bandit -r apps/ config/ -ll --exclude apps/core/migrations,apps/tasks/migrations
+	pip-audit -r requirements.txt --strict
 
 # ─── Dev Shortcuts ────────────────────────────────────────────────────────────
 

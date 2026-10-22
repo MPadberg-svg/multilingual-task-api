@@ -20,21 +20,17 @@ app: Celery = Celery("multilingual_task_api")
 app.config_from_object("django.conf:settings", namespace="CELERY")
 
 # Route tasks to dedicated queues by app domain.
-app.conf.task_routes: dict[str, dict[str, str]] = {
+app.conf.task_routes = {
     "apps.tasks.tasks.*": {"queue": "tasks"},
-    "apps.ai_assist.services.*": {"queue": "ai"},
+    "apps.ai_assist.*": {"queue": "ai"},
 }
 
+# Register standard autodiscovery for worker processes.
+app.autodiscover_tasks()
 
-# Auto-discover tasks after Django apps are fully loaded.
-# This is called explicitly after django.setup() to ensure all apps are ready.
-def discover_tasks():
+
+def discover_tasks() -> None:
     """Discover tasks from all installed Django apps."""
     from django.conf import settings
 
     app.autodiscover_tasks(lambda: settings.INSTALLED_APPS)
-
-
-# Call discover_tasks after Django setup
-# In production/worker contexts, this is called explicitly.
-# In the main app, it's triggered via apps.ready() signal.

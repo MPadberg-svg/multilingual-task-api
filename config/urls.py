@@ -5,15 +5,19 @@ Exposes:
     - Authentication (JWT): ``/api/v1/auth/token/``, ``/api/v1/auth/token/refresh/``, ``/api/v1/auth/token/verify/``
     - Task API: ``/api/v1/tasks/``
     - AI Assist API: ``/api/v1/ai/``
-    - Core API: ``/api/v1/`` (health, metrics)
+    - Core API: ``/api/v1/`` (live, health, ready, metrics)
     - GraphQL: ``/graphql/``
     - OpenAPI Schema: ``/api/schema/``
     - Swagger UI: ``/api/docs/``
     - ReDoc: ``/api/redoc/``
 """
 
+from __future__ import annotations
+
+from django.conf import settings
 from django.contrib import admin
 from django.urls import include, path
+from django.views.decorators.csrf import csrf_exempt
 
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 from rest_framework.permissions import AllowAny
@@ -45,8 +49,17 @@ urlpatterns = [
     path("api/v1/tasks/", include("apps.tasks.urls")),
     path("api/v1/ai/", include("apps.ai_assist.urls")),
     path("api/v1/", include("apps.core.urls")),
-    # GraphQL Engine
-    path("graphql/", AsyncGraphQLView.as_view(schema=graphql_schema)),
+    # GraphQL Engine (JWT-aware; interactive GraphiQL enabled only in DEBUG)
+    path(
+        "graphql/",
+        csrf_exempt(
+            AsyncGraphQLView.as_view(
+                schema=graphql_schema,
+                graphql_ide="graphiql" if settings.DEBUG else None,
+            )
+        ),
+        name="graphql",
+    ),
     # OpenAPI 3.0 Documentation & Schemas (Explicitly exempted from global auth)
     path(
         "api/schema/",

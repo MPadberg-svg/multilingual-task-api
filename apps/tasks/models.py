@@ -1,36 +1,22 @@
-"""Task models with multi-tenancy, soft-delete, and django-parler translations.
+"""Task models with multi-tenancy, soft-delete, and django-parler translations."""
 
-Provides:
-    - ``Task``: Core task entity with UUID, soft-delete, status, and
-      organization scoping.
-"""
+from __future__ import annotations
 
 import uuid
+from typing import Any
 
-from django.contrib.auth import get_user_model
+from django.conf import settings
 from django.db import models
 
 from parler.models import TranslatableModel, TranslatedFields
 
-User = get_user_model()
 
-
-class Task(TranslatableModel):
-    """A multilingual task entity scoped to a user and optional organization.
-
-    Attributes:
-        id: UUID primary key.
-        user: Creator/owner.
-        organization: Optional tenant scope.
-        status: Workflow state.
-        is_active: Soft-delete flag.
-        created_at: Timestamp.
-        updated_at: Auto-updated timestamp.
-    """
+class Task(TranslatableModel):  # type: ignore[misc]
+    """A multilingual task entity scoped to a user and optional organization."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
-        User,
+        settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
         related_name="tasks",
     )
@@ -68,10 +54,12 @@ class Task(TranslatableModel):
             models.Index(fields=["-created_at"]),
         ]
 
-    def __str__(self):
-        return self.safe_translation_getter("title", any_language=True) or str(self.id)
+    def __str__(self) -> str:
+        title = self.safe_translation_getter("title", any_language=True)
+        return str(title) if title else str(self.id)
 
-    def delete(self, *args, **kwargs):
+    def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
         """Soft-delete: set ``is_active=False`` instead of DB deletion."""
         self.is_active = False
         self.save(update_fields=["is_active", "updated_at"])
+        return 1, {self._meta.label: 1}

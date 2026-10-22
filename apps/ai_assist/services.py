@@ -1,12 +1,15 @@
-"""AI Assist service layer with security hardening and circuit breaker resilience.
+"""AI Assist service layer with structured outputs, caching, and circuit breaker resilience.
 
 Provides ``AIService`` for LLM-backed task operations including translation
 suggestions, prompt quality evaluation, and RLHF test-case generation.
-All public methods validate and sanitize user input before processing.
+All public methods validate and sanitize user input before processing,
+enforce Pydantic v2 output schemas, and avoid caching degraded/error responses.
 
 Cache keys follow the project convention:
     ``mltask:ai:{user_id}:{lang}:{sha256_hash}``
 """
+
+from __future__ import annotations
 
 import hashlib
 import json
@@ -17,46 +20,40 @@ from typing import Any
 from django.conf import settings
 from django.core.cache import cache
 
+from pydantic import ValidationError as PydanticValidationError
+
 from apps.ai_assist.circuit_breaker import CircuitOpenError, openai_circuit_breaker
-from apps.ai_assist.prompt_templates import PromptTemplateManager
+from apps.ai_assist.prompt_templates import SYSTEM_GUARDRAIL_PROMPT, PromptTemplateManager
+from apps.ai_assist.schemas import (
+    PromptQualitySchema,
+    RLHFTestCaseSchema,
+    TranslationSuggestionSchema,
+)
 from apps.core.security import InputValidator
+from apps.core.views import record_cache_hit, record_cache_miss
 
 logger = logging.getLogger(__name__)
 
-CACHE_TTL_AI = 3600  # seconds
+CACHE_TTL_AI: int = settings.CACHE_TTL.get("ai_suggestions", 3600)
+OPENAI_TIMEOUT_SECONDS: float = 30.0
 
 
-def _make_cache_key(user_id: str, lang: str, params: dict) -> str:
-    """Generate a deterministic SHA256 cache key.
+class UpstreamAIResponseError(RuntimeError):
+    """Raised when the upstream AI provider returns empty or invalid structured JSON."""
 
-    Args:
-        user_id: UUID of the requesting user.
-        lang: Resolved language code.
-        params: Serializable parameters dict.
 
-    Returns:
-        Cache key string in ``mltask:ai:{user_id}:{lang}:{hash}`` format.
-    """
+def _make_cache_key(user_id: str, lang: str, params: dict[str, Any]) -> str:
+    """Generate a deterministic SHA256 cache key."""
     payload = json.dumps(params, sort_keys=True, ensure_ascii=True)
     digest = hashlib.sha256(payload.encode()).hexdigest()[:16]
     return f"mltask:ai:{user_id}:{lang}:{digest}"
 
 
-def _safe_json_parse(raw: str) -> dict[str, Any]:
-    """Fail-safe JSON parser with fallback to empty dict.
-
-    Handles markdown fences, trailing commas, and plain text.
-
-    Args:
-        raw: Raw string from LLM response.
-
-    Returns:
-        Parsed dict or empty dict on failure.
-    """
+def _safe_json_parse(raw: str) -> Any:
+    """Fail-safe JSON parser supporting fenced blocks and trailing commas."""
     if not raw or not isinstance(raw, str):
         return {}
 
-    # Strip markdown fences
     cleaned = raw.strip()
     if cleaned.startswith("```json"):
         cleaned = cleaned[7:]
@@ -66,7 +63,6 @@ def _safe_json_parse(raw: str) -> dict[str, Any]:
         cleaned = cleaned[:-3]
     cleaned = cleaned.strip()
 
-    # Remove trailing commas before closing braces/brackets
     cleaned = re.sub(r",\s*([\}\]])", r"\1", cleaned)
 
     try:
@@ -77,49 +73,86 @@ def _safe_json_parse(raw: str) -> dict[str, Any]:
 
 
 class AIService:
-    """Orchestrates LLM calls with caching, security validation, and resilience.
-
-    Attributes:
-        client: OpenAI client instance (lazy initialised).
-        template_manager: PromptTemplateManager for versioned prompts.
-    """
+    """Orchestrates LLM calls with caching, Pydantic validation, and resilience."""
 
     def __init__(self) -> None:
-        self._client = None
+        self._client: Any = None
         self.template_manager = PromptTemplateManager()
 
     @property
-    def client(self):
-        """Lazy OpenAI client initialisation."""
+    def client(self) -> Any:
+        """Lazy OpenAI client initialisation with explicit timeout and bounded retries."""
         if self._client is None:
             import openai
 
-            self._client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+            self._client = openai.OpenAI(
+                api_key=settings.OPENAI_API_KEY,
+                timeout=OPENAI_TIMEOUT_SECONDS,
+                max_retries=1,
+            )
         return self._client
 
-    def _call_llm(self, prompt: str, temperature: float = 0.3) -> str:
-        """
-        Call OpenAI through the circuit breaker.
-        Falls back gracefully if circuit is OPEN.
+    def _call_llm(
+        self,
+        prompt: str,
+        temperature: float = 0.3,
+        system_prompt: str = SYSTEM_GUARDRAIL_PROMPT,
+    ) -> str:
+        """Call OpenAI through the circuit breaker with system/user role separation.
+
+        Propagates ``CircuitOpenError`` when the circuit breaker is open so
+        callers never cache degraded fallback payloads as valid responses.
         """
 
         def _raw_call() -> str:
             response = self.client.chat.completions.create(
                 model=settings.OPENAI_MODEL,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": prompt},
+                ],
                 temperature=temperature,
                 max_tokens=settings.OPENAI_MAX_TOKENS,
+                response_format={"type": "json_object"},
             )
-            return response.choices[0].message.content
+            content = response.choices[0].message.content
+            return content or ""
 
         try:
-            return openai_circuit_breaker.call(_raw_call)
-        except CircuitOpenError as e:
-            logger.warning("OpenAI circuit is OPEN: %s", e)
-            return '{"error": "AI service temporarily unavailable", "retry_after": 60}'
-        except Exception as e:
-            logger.error("OpenAI call failed: %s", e)
+            return str(openai_circuit_breaker.call(_raw_call))
+        except CircuitOpenError as exc:
+            logger.warning("OpenAI circuit is OPEN: %s", exc)
             raise
+        except Exception as exc:
+            logger.error("OpenAI call failed: %s", exc)
+            raise
+
+    @staticmethod
+    def _validate_prose_input(user_input: str) -> str:
+        if not isinstance(user_input, str):
+            raise ValueError("Input must be a string.")
+        is_dangerous, reason = InputValidator.detect_injection(user_input)
+        if is_dangerous:
+            raise ValueError(f"Input blocked: {reason}")
+        sanitized = InputValidator.sanitize_string(user_input)
+        if not sanitized:
+            raise ValueError("Input cannot be empty after sanitization.")
+        return sanitized
+
+    @staticmethod
+    def _validate_code_or_spec_input(user_input: str) -> str:
+        if not isinstance(user_input, str):
+            raise ValueError("Input must be a string.")
+        is_code_dangerous, code_reason = InputValidator.validate_code_input(user_input)
+        if is_code_dangerous:
+            raise ValueError(f"Input blocked: {code_reason}")
+        is_xss, xss_reason = InputValidator.detect_xss(user_input)
+        if is_xss:
+            raise ValueError(f"Input blocked: {xss_reason}")
+        sanitized = InputValidator.sanitize_string(user_input)
+        if not sanitized:
+            raise ValueError("Input cannot be empty after sanitization.")
+        return sanitized
 
     def suggest_task_translations(
         self,
@@ -127,32 +160,32 @@ class AIService:
         lang: str,
         user_input: str,
     ) -> dict[str, Any]:
-        """Generate AI-suggested translations for a task.
+        """Generate AI-suggested EN/ES/FR translations validated via Pydantic."""
+        sanitized = self._validate_prose_input(user_input)
+        version = self.template_manager.get_version("task_translation")
 
-        Args:
-            user_id: UUID of the requesting user.
-            lang: Target language code.
-            user_input: Raw user description or title.
-
-        Returns:
-            Dict with suggested translations and metadata.
-
-        Raises:
-            ValueError: If input contains dangerous patterns.
-        """
-        is_dangerous, reason = InputValidator.detect_injection(user_input)
-        if is_dangerous:
-            raise ValueError(f"Input blocked: {reason}")
-        sanitized = InputValidator.sanitize_string(user_input)
-
-        cache_key = _make_cache_key(user_id, lang, {"fn": "translate", "q": sanitized})
+        cache_key = _make_cache_key(
+            user_id, lang, {"fn": "translate", "v": version, "q": sanitized}
+        )
         cached = cache.get(cache_key)
         if cached is not None:
-            return cached
+            record_cache_hit()
+            return dict(cached)
 
-        prompt = self.template_manager.render("task_translation", user_input=sanitized)
+        record_cache_miss()
+        prompt = self.template_manager.render("task_translation", user_input=sanitized, lang=lang)
         raw = self._call_llm(prompt, temperature=0.3)
-        result = _safe_json_parse(raw)
+        parsed = _safe_json_parse(raw)
+        if not parsed:
+            raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")
+
+        try:
+            validated = TranslationSuggestionSchema.model_validate(parsed)
+        except PydanticValidationError as exc:
+            logger.warning("AI translation schema validation failed: %s", exc)
+            raise UpstreamAIResponseError("AI response failed schema validation") from exc
+
+        result = validated.model_dump()
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
         return result
 
@@ -162,32 +195,30 @@ class AIService:
         lang: str,
         user_input: str,
     ) -> dict[str, Any]:
-        """Evaluate the quality of a user-provided prompt.
+        """Evaluate prompt quality and validate score/improvements via Pydantic."""
+        sanitized = self._validate_prose_input(user_input)
+        version = self.template_manager.get_version("prompt_evaluation")
 
-        Args:
-            user_id: UUID of the requesting user.
-            lang: Target language code.
-            user_input: Raw prompt text.
-
-        Returns:
-            Dict with quality score and improvement suggestions.
-
-        Raises:
-            ValueError: If input contains dangerous patterns.
-        """
-        is_dangerous, reason = InputValidator.detect_injection(user_input)
-        if is_dangerous:
-            raise ValueError(f"Input blocked: {reason}")
-        sanitized = InputValidator.sanitize_string(user_input)
-
-        cache_key = _make_cache_key(user_id, lang, {"fn": "eval", "q": sanitized})
+        cache_key = _make_cache_key(user_id, lang, {"fn": "eval", "v": version, "q": sanitized})
         cached = cache.get(cache_key)
         if cached is not None:
-            return cached
+            record_cache_hit()
+            return dict(cached)
 
-        prompt = self.template_manager.render("prompt_evaluation", user_input=sanitized)
+        record_cache_miss()
+        prompt = self.template_manager.render("prompt_evaluation", user_input=sanitized, lang=lang)
         raw = self._call_llm(prompt, temperature=0.2)
-        result = _safe_json_parse(raw)
+        parsed = _safe_json_parse(raw)
+        if not parsed:
+            raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")
+
+        try:
+            validated = PromptQualitySchema.model_validate(parsed)
+        except PydanticValidationError as exc:
+            logger.warning("AI quality schema validation failed: %s", exc)
+            raise UpstreamAIResponseError("AI response failed schema validation") from exc
+
+        result = validated.model_dump()
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
         return result
 
@@ -197,49 +228,37 @@ class AIService:
         lang: str,
         user_input: str,
     ) -> dict[str, Any]:
-        """Generate RLHF-style test cases from a task description.
+        """Generate RLHF-style pytest unit tests validated via Pydantic."""
+        sanitized = self._validate_code_or_spec_input(user_input)
+        version = self.template_manager.get_version("rlhf_generation")
 
-        Args:
-            user_id: UUID of the requesting user.
-            lang: Target language code.
-            user_input: Raw task description.
-
-        Returns:
-            Dict with generated test cases.
-
-        Raises:
-            ValueError: If input contains dangerous patterns.
-        """
-        is_dangerous, reason = InputValidator.detect_injection(user_input)
-        if is_dangerous:
-            raise ValueError(f"Input blocked: {reason}")
-        sanitized = InputValidator.sanitize_string(user_input)
-
-        cache_key = _make_cache_key(user_id, lang, {"fn": "rlhf", "q": sanitized})
+        cache_key = _make_cache_key(user_id, lang, {"fn": "rlhf", "v": version, "q": sanitized})
         cached = cache.get(cache_key)
         if cached is not None:
-            return cached
+            record_cache_hit()
+            return dict(cached)
 
-        prompt = self.template_manager.render("rlhf_generation", user_input=sanitized)
+        record_cache_miss()
+        prompt = self.template_manager.render("rlhf_generation", user_input=sanitized, lang=lang)
         raw = self._call_llm(prompt, temperature=0.4)
-        result = _safe_json_parse(raw)
+        parsed = _safe_json_parse(raw)
+        if not parsed:
+            raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")
+
+        try:
+            validated = RLHFTestCaseSchema.model_validate(parsed)
+        except PydanticValidationError as exc:
+            logger.warning("AI RLHF schema validation failed: %s", exc)
+            raise UpstreamAIResponseError("AI response failed schema validation") from exc
+
+        result = validated.model_dump()
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
         return result
 
     def _parse_json_response(self, raw: str) -> dict[str, Any]:
-        """Internal JSON parser for test compatibility.
-
-        Args:
-            raw: Raw string from LLM response.
-
-        Returns:
-            Parsed dict.
-
-        Raises:
-            ValueError: On unparseable input.
-        """
+        """Internal JSON parser maintained for direct unit test compatibility."""
         result = _safe_json_parse(raw)
-        if not result:
+        if not result or not isinstance(result, dict):
             raise ValueError("Unparseable JSON response from LLM")
         return result
 

@@ -1,7 +1,6 @@
-"""Django app configuration for the tasks app.
+"""Django app configuration for the tasks app."""
 
-Wires up signal receivers on app ready.
-"""
+from __future__ import annotations
 
 from django.apps import AppConfig
 
@@ -13,6 +12,6 @@ class TasksConfig(AppConfig):
     name = "apps.tasks"
     verbose_name = "Tasks"
 
-    def ready(self):
+    def ready(self) -> None:
         """Import signal receivers when the app is ready."""
         import apps.tasks.signals  # noqa: F401

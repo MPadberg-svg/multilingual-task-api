@@ -6,7 +6,11 @@ short-lived DB connections, and cache exception tolerance.
 
 from __future__ import annotations
 
-from .base import *  # noqa: F401,F403
+import os
+
+os.environ.setdefault("SECRET_KEY", "dev-insecure-secret-key-local-only-0123456789abcdef")
+
+from .base import *  # noqa: E402,F401,F403
 
 # =============================================================================
 # Debug Mode
@@ -14,6 +18,19 @@ from .base import *  # noqa: F401,F403
 DEBUG: bool = True
 
 ALLOWED_HOSTS: list[str] = ["*"]
+
+CSRF_TRUSTED_ORIGINS: list[str] = list(
+    dict.fromkeys(
+        [
+            *CSRF_TRUSTED_ORIGINS,  # noqa: F405
+            "https://*.github.dev",
+            "https://*.app.github.dev",
+            "https://localhost:8000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+        ]
+    )
+)
 
 # =============================================================================
 # Database — Disable persistent connections in development

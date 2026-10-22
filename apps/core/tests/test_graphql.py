@@ -1,10 +1,9 @@
 """Tests for Strawberry GraphQL schema — queries and mutations."""
 
-import pytest
-from unittest.mock import MagicMock, AsyncMock
 from django.contrib.auth import get_user_model
 from django.test import AsyncRequestFactory
-from strawberry.django.views import AsyncGraphQLView
+
+import pytest
 
 from apps.core.graphql.schema import schema
 from apps.tasks.models import Task
@@ -24,6 +23,7 @@ async def _execute(query: str, user=None):
         request.user = user
     else:
         from django.contrib.auth.models import AnonymousUser
+
         request.user = AnonymousUser()
     result = await schema.execute(query, context_value=request)
     return result
@@ -42,6 +42,7 @@ class TestGraphQLQueries:
     async def test_task_query_returns_none_for_anonymous(self):
         """Single task query must return None for unauthenticated user."""
         from uuid import uuid4
+
         result = await _execute(f'{{ task(id: "{uuid4()}") {{ id }} }}')
         assert result.errors is None
         assert result.data["task"] is None
@@ -53,6 +54,7 @@ class TestGraphQLQueries:
         user = await sync_to_async(User.objects.create_user)(
             email="gql_query@example.com", password="pass"
         )
+
         def _create_task_with_title(u):
             t = Task.objects.create(user=u, status="pending")
             t.set_current_language("en")
@@ -60,7 +62,7 @@ class TestGraphQLQueries:
             t.save()
             return t
 
-        task = await sync_to_async(_create_task_with_title)(user)
+        await sync_to_async(_create_task_with_title)(user)
 
         result = await _execute("{ tasks { id status } }", user=user)
         assert result.errors is None
@@ -166,7 +168,6 @@ class TestGraphQLMutations:
 
     async def test_update_task_status_unauthenticated_returns_none(self):
         """Unauthenticated mutation must return None, not raise."""
-        from asgiref.sync import sync_to_async
         from uuid import uuid4
 
         mutation = f"""

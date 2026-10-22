@@ -6,6 +6,7 @@ Secrets and environment variables are loaded via python-decouple.
 
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
@@ -156,12 +157,13 @@ REST_FRAMEWORK: dict[str, Any] = {
     ],
     "DEFAULT_PAGINATION_CLASS": "apps.core.pagination.StandardResultsSetPagination",
     "DEFAULT_THROTTLE_CLASSES": [
-        "apps.core.throttling.HealthCheckAnonRateThrottle",
+        "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "100/day",
         "user": "1000/day",
+        "health": "600/min",
         "ai_assist": "20/hour",
         "ai_assist_burst": "5/min",
     },
@@ -179,7 +181,7 @@ if DEBUG:
 # =============================================================================
 # SimpleJWT
 # =============================================================================
-from datetime import timedelta  # noqa: E402
+_JWT_SIGNING_KEY: str = config("JWT_SIGNING_KEY", default="") or SECRET_KEY
 
 SIMPLE_JWT: dict[str, Any] = {
     "ACCESS_TOKEN_LIFETIME": timedelta(minutes=15),
@@ -188,7 +190,7 @@ SIMPLE_JWT: dict[str, Any] = {
     "BLACKLIST_AFTER_ROTATION": True,
     "UPDATE_LAST_LOGIN": True,
     "ALGORITHM": "HS256",
-    "SIGNING_KEY": config("JWT_SIGNING_KEY", default=SECRET_KEY),
+    "SIGNING_KEY": _JWT_SIGNING_KEY,
     "AUTH_HEADER_TYPES": ("Bearer",),
     "USER_ID_FIELD": "id",
     "USER_ID_CLAIM": "user_id",
@@ -199,7 +201,10 @@ SIMPLE_JWT: dict[str, Any] = {
 # =============================================================================
 SPECTACULAR_SETTINGS: dict[str, Any] = {
     "TITLE": "Multilingual Task API",
-    "DESCRIPTION": "Production-grade AI annotation platform API with multilingual support, Redis caching, and LLM pipeline integration.",
+    "DESCRIPTION": (
+        "Production-grade AI annotation platform API with multilingual support, "
+        "Redis caching, and LLM pipeline integration."
+    ),
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
@@ -280,10 +285,11 @@ CHANNEL_LAYERS: dict[str, Any] = {
 }
 
 # =============================================================================
-# Logging
+# Logging & Observability
 # =============================================================================
 LOG_LEVEL: str = config("LOG_LEVEL", default="INFO")
 _USE_JSON_LOGS: bool = config("JSON_LOGS", default=False, cast=bool)
+METRICS_AUTH_TOKEN: str = config("METRICS_AUTH_TOKEN", default="")
 
 LOGGING: dict[str, Any] = {
     "version": 1,
@@ -342,16 +348,17 @@ OPENAI_MAX_TOKENS: int = config("OPENAI_MAX_TOKENS", default=2000, cast=int)
 OPENAI_TEMPERATURE: float = config("OPENAI_TEMPERATURE", default=0.7, cast=float)
 
 # =============================================================================
-# Security Defaults (hardened in production.py)
+# Security & Proxy Defaults (hardened in production.py)
 # =============================================================================
-SECURE_BROWSER_XSS_FILTER: bool = True
 SECURE_CONTENT_TYPE_NOSNIFF: bool = True
 X_FRAME_OPTIONS: str = "DENY"
+SESSION_COOKIE_HTTPONLY: bool = True
+SESSION_COOKIE_SAMESITE: str = "Lax"
+CSRF_COOKIE_SAMESITE: str = "Lax"
+TRUSTED_PROXY_COUNT: int = config("TRUSTED_PROXY_COUNT", default=0, cast=int)
 
-CSRF_TRUSTED_ORIGINS: list[str] = [
-    "https://*.github.dev",
-    "https://*.app.github.dev",
-    "https://localhost:8000",
-    "http://localhost:8000",
-    "http://127.0.0.1:8000",
-]
+CSRF_TRUSTED_ORIGINS: list[str] = config(
+    "CSRF_TRUSTED_ORIGINS",
+    default="http://localhost:8000,http://127.0.0.1:8000",
+    cast=Csv(),
+)

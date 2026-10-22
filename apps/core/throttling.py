@@ -4,7 +4,7 @@ Defines three throttles:
 
 * ``AIAssistRateThrottle`` — sustained per-user limit (20/hour).
 * ``BurstRateThrottle``     — short-window burst limit (5/minute).
-* ``HealthCheckAnonRateThrottle`` — generous anon limit for liveness probes.
+* ``HealthCheckAnonRateThrottle`` — generous anon limit for liveness/health probes.
 
 All AI throttles are per-authenticated-user (anonymous requests get a
 ``None`` cache key, which DRF treats as "do not throttle this scope but
@@ -85,10 +85,35 @@ class BurstRateThrottle(_UserScopedThrottle):
 
 
 class HealthCheckAnonRateThrottle(AnonRateThrottle):
-    """Generous anonymous limit for ``/health/`` and ``/metrics/`` style probes.
+    """Dedicated high-headroom throttle for orchestrator health/metrics probes.
 
-    Falls back to the global ``anon`` rate; a dedicated scope lets ops bump
-    the limit for monitoring traffic without raising it everywhere.
+    Uses the ``health`` rate scope (default ``600/min``) so Docker, ECS, and
+    ALB health checks never exhaust the stricter ``anon`` (``100/day``) budget.
+    Fails open if the cache backend is unreachable so liveness/readiness probes
+    never crash with HTTP 500 during a cache outage.
     """
 
-    scope = "anon"
+    scope = "health"
+
+    def allow_request(self, request: Any, view: Any) -> bool:
+        try:
+            if self.rate is None:
+                return True
+            self.key = self.get_cache_key(request, view)
+            if self.key is None:
+                return True
+            history = self.cache.get(self.key, [])
+            if not isinstance(history, list):
+                return True
+            self.history = history
+            self.now = self.timer()
+            while self.history and self.history[-1] <= self.now - self.duration:
+                self.history.pop()
+            if len(self.history) >= self.num_requests:
+                return self.throttle_failure()
+            return self.throttle_success()
+        except Exception:
+            logger.debug(
+                "HealthCheckAnonRateThrottle failing open due to cache error", exc_info=True
+            )
+            return True

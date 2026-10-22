@@ -7,17 +7,26 @@ Provides:
     - ``AuditLog``: Immutable audit trail for security and compliance.
 """
 
+from __future__ import annotations
+
 import uuid
+from typing import Any, ClassVar
 
 from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
-class CustomUserManager(BaseUserManager):
+class CustomUserManager(BaseUserManager["CustomUser"]):
     """Custom manager for CustomUser where email is the unique identifier."""
 
-    def create_user(self, email, password=None, **extra_fields):
+    def create_user(
+        self,
+        email: str,
+        password: str | None = None,
+        **extra_fields: Any,
+    ) -> "CustomUser":
         """Create and save a User with the given email and password."""
         if not email:
             raise ValueError("The Email field must be set")
@@ -28,7 +37,12 @@ class CustomUserManager(BaseUserManager):
         user.save(using=self._db)
         return user
 
-    def create_superuser(self, email, password=None, **extra_fields):
+    def create_superuser(
+        self,
+        email: str,
+        password: str | None = None,
+        **extra_fields: Any,
+    ) -> "CustomUser":
         """Create and save a SuperUser with the given email and password."""
         extra_fields.setdefault("is_staff", True)
         extra_fields.setdefault("is_superuser", True)
@@ -41,7 +55,7 @@ class CustomUserManager(BaseUserManager):
         return self.create_user(email, password, **extra_fields)
 
 
-class CustomUser(AbstractBaseUser, PermissionsMixin):
+class CustomUser(AbstractBaseUser, PermissionsMixin):  # type: ignore[django-manager-missing]
     """Custom User model indexed by UUID and authenticated via email."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -55,8 +69,8 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
 
     objects = CustomUserManager()
 
-    USERNAME_FIELD = "email"
-    REQUIRED_FIELDS = []
+    USERNAME_FIELD: ClassVar[str] = "email"
+    REQUIRED_FIELDS: ClassVar[list[str]] = []
 
     class Meta:
         db_table = "core_user"
@@ -68,18 +82,18 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
             models.Index(fields=["is_active", "is_staff"]),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.email
 
-    def get_full_name(self):
+    def get_full_name(self) -> str:
         full = f"{self.first_name} {self.last_name}".strip()
         return full or self.email
 
-    def get_short_name(self):
+    def get_short_name(self) -> str:
         return self.first_name or self.email.split("@")[0]
 
 
-class Organization(models.Model):
+class Organization(models.Model):  # type: ignore[django-manager-missing]
     """Tenant container with plan-based resource limits."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -107,7 +121,7 @@ class Organization(models.Model):
             models.Index(fields=["plan", "is_active"]),
         ]
 
-    def __str__(self):
+    def __str__(self) -> str:
         return self.name
 
 
@@ -145,7 +159,22 @@ class OrganizationMember(models.Model):
             models.Index(fields=["user", "role"]),
         ]
 
-    def __str__(self):
+    def clean(self) -> None:
+        """Enforce organization max_users plan seat quota on new memberships."""
+        super().clean()
+        if self._state.adding and self.organization_id:
+            existing_count = OrganizationMember.objects.filter(
+                organization_id=self.organization_id
+            ).count()
+            if existing_count >= self.organization.max_users:
+                raise ValidationError("Organization user seat limit exceeded.")
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if self._state.adding and self.organization_id:
+            self.clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self) -> str:
         return f"{self.user} @ {self.organization} ({self.role})"
 
 
@@ -194,5 +223,5 @@ class AuditLog(models.Model):
         ]
         ordering = ["-created_at"]
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"{self.action} {self.resource_type} by {self.user} at {self.created_at}"

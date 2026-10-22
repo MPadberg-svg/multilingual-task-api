@@ -1,24 +1,23 @@
-"""Django admin configuration for core infrastructure models.
+"""Django admin configuration for core infrastructure models."""
 
-Registers:
-    - ``CustomUser``: Managed via customized UserAdmin using email.
-    - ``Organization``: With automated slug-prepopulation.
-    - ``OrganizationMember``: RBAC relation tracking.
-    - ``AuditLog``: Configured as a fully read-only immutable table.
-"""
+from __future__ import annotations
+
+from typing import Any
 
 from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
+from django.http import HttpRequest
 from django.utils.html import format_html
+from django.utils.safestring import SafeString
 
 from apps.core.models import AuditLog, CustomUser, Organization, OrganizationMember
 
 
 @admin.register(CustomUser)
-class CustomUserAdmin(BaseUserAdmin):
+class CustomUserAdmin(BaseUserAdmin):  # type: ignore[type-arg]
     """Custom admin view for managing email-authenticated CustomUser instances."""
 
-    model = CustomUser
+    model = CustomUser  # type: ignore[assignment]
     list_display = (
         "email",
         "first_name",
@@ -77,8 +76,8 @@ class CustomUserAdmin(BaseUserAdmin):
 
 
 @admin.register(Organization)
-class OrganizationAdmin(admin.ModelAdmin):
-    """Admin configuration for Managing multi-tenant Organization nodes."""
+class OrganizationAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    """Admin configuration for managing multi-tenant Organization nodes."""
 
     list_display = ("name", "slug", "plan", "is_active", "member_count")
     list_filter = ("plan", "is_active")
@@ -86,15 +85,14 @@ class OrganizationAdmin(admin.ModelAdmin):
     prepopulated_fields = {"slug": ("name",)}
     readonly_fields = ("id",)
 
-    def member_count(self, obj):
+    @admin.display(description="Members")
+    def member_count(self, obj: Organization) -> SafeString:
         count = obj.members.count()
         return format_html("<b>{}</b> members", count)
 
-    member_count.short_description = "Members"
-
 
 @admin.register(OrganizationMember)
-class OrganizationMemberAdmin(admin.ModelAdmin):
+class OrganizationMemberAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
     """Admin representation for RBAC assignments matching users to tenants."""
 
     list_display = ("user", "organization", "role", "role_badge")
@@ -109,7 +107,8 @@ class OrganizationMemberAdmin(admin.ModelAdmin):
         "viewer": "#6b7280",
     }
 
-    def role_badge(self, obj):
+    @admin.display(description="Role")
+    def role_badge(self, obj: OrganizationMember) -> SafeString:
         color = self.ROLE_COLORS.get(obj.role, "#6b7280")
         return format_html(
             '<span style="background:{};color:white;padding:2px 8px;'
@@ -118,23 +117,20 @@ class OrganizationMemberAdmin(admin.ModelAdmin):
             obj.role.upper(),
         )
 
-    role_badge.short_description = "Role"
-
 
 @admin.register(AuditLog)
-class AuditLogAdmin(admin.ModelAdmin):
-    """Admin layout for security audit tracking.
-
-    Enforced as read-only to safeguard data immutability.
-    """
+class AuditLogAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    """Admin layout for security audit tracking (enforced read-only)."""
 
     list_display = ("action", "resource_type", "user_email", "ip_address", "created_at")
     list_filter = ("action", "resource_type", "created_at")
     search_fields = ("user__email", "resource_type", "ip_address")
     readonly_fields = (
         "id",
+        "organization",
         "action",
         "resource_type",
+        "resource_id",
         "user",
         "ip_address",
         "user_agent",
@@ -144,16 +140,15 @@ class AuditLogAdmin(admin.ModelAdmin):
     ordering = ("-created_at",)
     date_hierarchy = "created_at"
 
-    def user_email(self, obj):
+    @admin.display(description="User")
+    def user_email(self, obj: AuditLog) -> str:
         return obj.user.email if obj.user else "—"
 
-    user_email.short_description = "User"
-
-    def has_add_permission(self, request):
+    def has_add_permission(self, request: HttpRequest) -> bool:
         return False
 
-    def has_change_permission(self, request, obj=None):
+    def has_change_permission(self, request: HttpRequest, obj: Any = None) -> bool:
         return False
 
-    def has_delete_permission(self, request, obj=None):
+    def has_delete_permission(self, request: HttpRequest, obj: Any = None) -> bool:
         return False
