@@ -286,29 +286,33 @@ class TaskViewSet(viewsets.ModelViewSet):
             if priority_filter:
                 candidates = candidates.filter(priority=priority_filter)
 
-            candidate_ids = candidates.order_by("-priority_rank", "created_at").values_list(
-                "id", flat=True
-            )[:10]
+            candidate_id_list = list(
+                candidates.order_by("-priority_rank", "created_at").values_list("id", flat=True)[
+                    :25
+                ]
+            )
+            if not candidate_id_list:
+                return Response(
+                    {"detail": "No eligible tasks available for claiming."},
+                    status=status.HTTP_204_NO_CONTENT,
+                )
 
-            lock_qs = Task.objects.filter(id__in=list(candidate_ids))
+            lock_qs = (
+                Task.objects.filter(id__in=candidate_id_list)
+                .filter(
+                    Q(claimed_until__isnull=True)
+                    | Q(claimed_until__lte=now)
+                    | Q(claimed_by=request.user)
+                )
+                .annotate(priority_rank=priority_rank)
+                .order_by("-priority_rank", "created_at")
+            )
             if connection.features.has_select_for_update_skip_locked:
                 lock_qs = lock_qs.select_for_update(skip_locked=True)
             elif connection.features.has_select_for_update:
                 lock_qs = lock_qs.select_for_update()
 
-            locked_map = {t.id: t for t in lock_qs}
-            claimed_task: Task | None = None
-            for cid in candidate_ids:
-                candidate_obj = locked_map.get(cid)
-                if candidate_obj is None:
-                    continue
-                if (
-                    candidate_obj.claimed_until is None
-                    or candidate_obj.claimed_until <= now
-                    or candidate_obj.claimed_by_id == request.user.id
-                ):
-                    claimed_task = candidate_obj
-                    break
+            claimed_task: Task | None = lock_qs.first()
 
             if claimed_task is None:
                 return Response(

@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.4.0] — 2026-10-22
+
+### Added
+- **Live PostgreSQL 16 & Redis 7 CI Service-Container Integration Matrix (`config/settings/ci_integration.py`, `.github/workflows/ci.yml`, `tests/integration/test_postgres_redis_integration.py`, `Makefile`)**:
+  - Added `integration` job in `.github/workflows/ci.yml` (`postgres:16-alpine` + `redis:7-alpine`) and `make test-integration` executing `manage.py migrate` plus all `215` tests against real PostgreSQL 16, `django-redis` (`ZlibCompressor` + `JSONSerializer` + atomic `INCRBY`), Redis Pub/Sub (`EventPublisher`), and `channels_redis.core.RedisChannelLayer` WebSockets.
+  - Added multi-connection `SELECT ... FOR UPDATE SKIP LOCKED LIMIT 1` contention & 8-annotator `Barrier` stampede tests verifying non-blocking, zero-duplicate RLHF task leasing on PostgreSQL 16.
+- **Cluster-Wide Redis-Coordinated Single-Flight `CircuitBreaker` (`apps/ai_assist/circuit_breaker.py`, `apps/core/tests/test_distributed_cb_and_claim_sql.py`)**:
+  - Upgraded `CircuitBreaker` (`shared_cache=True` on `openai_circuit_breaker`) to synchronize failure counters, `OPEN` windows, and atomic `cache.add` single-flight `HALF_OPEN` recovery probes across all Gunicorn/Celery worker processes via Redis with automatic thread-safe in-memory fallback.
+
+### Fixed
+- **Single-Row `LIMIT 1 FOR UPDATE SKIP LOCKED` Task Leasing (`apps/tasks/views.py`)**:
+  - Updated `TaskViewSet.claim` to lock `LIMIT 1` ordered by `(-priority_rank, created_at)` instead of locking the entire candidate batch at once, eliminating false `204 No Content` starvation under concurrent annotator contention and removing a redundant candidate queryset evaluation.
+
+---
+
 ## [1.3.2] — 2026-10-22
 
 ### Added

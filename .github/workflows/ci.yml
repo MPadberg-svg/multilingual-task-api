@@ -122,4 +122,63 @@ jobs:
           HEADERS=$(curl -fsSI http://127.0.0.1:18000/explorer/)
           echo "$HEADERS" | grep -qi "content-security-policy:.*'nonce-"
 
+  integration:
+    name: PostgreSQL 16 & Redis 7 Integration
+    runs-on: ubuntu-latest
+    needs: lint
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: multilingual_task_api
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres -d multilingual_task_api"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=10
+    env:
+      DJANGO_SETTINGS_MODULE: config.settings.ci_integration
+      SECRET_KEY: ci-integration-secret-key-not-for-prod-0123456789abcdef
+      POSTGRES_DB: multilingual_task_api
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci-postgres-password
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      REDIS_URL: redis://127.0.0.1:6379/0
+      CELERY_BROKER_URL: redis://127.0.0.1:6379/1
+      CELERY_RESULT_BACKEND: redis://127.0.0.1:6379/2
+      OPENAI_API_KEY: sk-test-dummy-key
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Verify migrations apply cleanly on PostgreSQL 16
+        run: python manage.py migrate --noinput
+      - name: Run full suite & live SKIP LOCKED / Redis 7 integration matrix
+        run: |
+          if ! pytest --ds=config.settings.ci_integration --reuse-db apps/ tests/integration/ > /tmp/pytest.log 2>&1; then
+            cat /tmp/pytest.log
+            SUMMARY=$(grep -E "^(FAILED|ERROR|E   )" /tmp/pytest.log | tail -n 15 | tr '\n' ' ' | cut -c1-800)
+            echo "::error::PG16/Redis7 pytest failure: ${SUMMARY:-$(tail -n 10 /tmp/pytest.log | tr '\n' ' ')}"
+            exit 1
+          fi
+          cat /tmp/pytest.log
+
+
 

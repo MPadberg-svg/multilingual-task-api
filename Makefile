@@ -1,4 +1,4 @@
-.PHONY: up down build migrate seed test test-cov test-local cache-flush lint format shell logs \
+.PHONY: up down build migrate seed test test-cov test-local test-integration cache-flush lint format shell logs \
         docker-clean locust-benchmark create-admin warm-cache setup security test-fast \
         locust-headless tf-fmt tf-validate sync-github-vars
 
@@ -51,6 +51,10 @@ test-fast:
 # Run tests locally without Docker (uses SQLite via config.settings.testing)
 test-local:
 	pytest -x -q --no-header
+
+# Run full suite + live PostgreSQL 16 & Redis 7 concurrency/wire tests inside Docker
+test-integration:
+	docker-compose exec api pytest --ds=config.settings.ci_integration apps/ tests/integration/
 
 # ─── Load Testing ─────────────────────────────────────────────────────────────
 

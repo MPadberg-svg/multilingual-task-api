@@ -209,7 +209,7 @@ SPECTACULAR_SETTINGS: dict[str, Any] = {
         "telemetry, scoped M2M API keys, HMAC-signed webhooks, keyset cursor pagination, "
         "and W3C/OTLP distributed tracing."
     ),
-    "VERSION": "1.3.2",
+    "VERSION": "1.4.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
 
