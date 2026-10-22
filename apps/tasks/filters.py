@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from django.conf import settings
 from django.db.models import Exists, Field, OuterRef, Q, QuerySet
 from django.db.models.lookups import IContains
 
@@ -77,18 +76,14 @@ class TaskFilter(filters.FilterSet):
         name: str,
         value: str,
     ) -> QuerySet[Task]:
-        """Filter tasks across configured language translations via an ``EXISTS`` trigram semi-join."""
+        """Filter tasks across translations via an ``EXISTS`` ``pg_trgm`` semi-join."""
         cleaned = (value or "").strip()
         if not cleaned:
             return queryset
 
-        languages = getattr(settings, "LANGUAGES", [("en", "English")])
-        lang_codes = [str(code) for code, _ in languages]
         translation_model = Task._parler_meta.root_model
-
         matching_translations = translation_model.objects.filter(
             master_id=OuterRef("pk"),
-            language_code__in=lang_codes,
         ).filter(Q(title__trgm_ilike=cleaned) | Q(description__trgm_ilike=cleaned))
 
         return queryset.filter(Exists(matching_translations))

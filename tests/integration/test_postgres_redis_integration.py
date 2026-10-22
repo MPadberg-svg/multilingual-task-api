@@ -527,7 +527,7 @@ def test_postgres_pg_trgm_gin_indexes_accelerate_multilingual_ilike_search() -> 
             ]
 
             translation_model = Task._parler_meta.root_model
-            trgm_qs = translation_model.objects.filter(language_code__in=["en", "es", "fr"]).filter(
+            trgm_qs = translation_model.objects.filter(
                 Q(title__trgm_ilike="QuantumTrigramProbe")
                 | Q(description__trgm_ilike="QuantumTrigramProbe")
             )
@@ -537,6 +537,7 @@ def test_postgres_pg_trgm_gin_indexes_accelerate_multilingual_ilike_search() -> 
             cur.execute("SET LOCAL enable_seqscan = off")
             cur.execute(f"EXPLAIN (FORMAT JSON) {sql}", params)
             plan_json = json.dumps(cur.fetchone()[0])
+            assert "Bitmap Index Scan" in plan_json
             assert "tasks_trans_title_trgm_idx" in plan_json
             assert "tasks_trans_desc_trgm_idx" in plan_json
 
