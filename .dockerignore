@@ -1,3 +1,7 @@
+.git/
+.gitignore
+.github/
+.pre-commit-config.yaml
 __pycache__/
 *.py[cod]
 *$py.class
@@ -17,6 +21,7 @@ htmlcov/
 .idea/
 *.swp
 .DS_Store
+docker-compose.yml
 docker-compose.override.yml
 *.log
 logs/
@@ -32,6 +37,6 @@ celerybeat.pid
 secrets.json
 credentials.json
 tests/
-docs/
 terraform/
-.github/
+docs/*
+!docs/api-explorer.html

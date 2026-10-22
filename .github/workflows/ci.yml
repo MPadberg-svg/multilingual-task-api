@@ -85,3 +85,41 @@ jobs:
           terraform init -backend=false
           terraform validate
 
+  docker:
+    name: Container Build & Smoke Test
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build hardened multi-stage production image
+        run: docker build -t multilingual-task-api:ci-smoke .
+      - name: Verify non-root UID, read-only /app, and .dockerignore invariants
+        run: |
+          test "$(docker run --rm multilingual-task-api:ci-smoke id -u)" = "1000"
+          docker run --rm multilingual-task-api:ci-smoke sh -c '
+            test ! -w /app/manage.py &&
+            test -f /app/docs/api-explorer.html &&
+            test -d /app/staticfiles/admin &&
+            test ! -d /app/.git &&
+            test ! -d /app/terraform
+          '
+      - name: Boot container and smoke-test /api/v1/live/ and /explorer/ CSP nonce
+        run: |
+          docker run -d --name mltask-smoke -p 18000:8000 \
+            -e DJANGO_SETTINGS_MODULE=config.settings.testing \
+            multilingual-task-api:ci-smoke
+          trap 'docker logs mltask-smoke || true; docker rm -f mltask-smoke || true' EXIT
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18000/api/v1/live/ | grep -q '"alive"'; then
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              echo "::error::Container liveness probe did not become healthy"
+              exit 1
+            fi
+            sleep 1
+          done
+          HEADERS=$(curl -fsSI http://127.0.0.1:18000/explorer/)
+          echo "$HEADERS" | grep -qi "content-security-policy:.*'nonce-"
+
+

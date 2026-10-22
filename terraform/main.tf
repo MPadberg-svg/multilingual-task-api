@@ -20,6 +20,12 @@ provider "aws" {
   region = var.aws_region
 }
 
+# CloudFront-scoped WAFv2 WebACLs must always be provisioned in us-east-1.
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+}
+
 module "vpc" {
   source  = "terraform-aws-modules/vpc/aws"
   version = "~> 5.0"
@@ -216,10 +222,22 @@ resource "aws_lb_listener" "http" {
   }
 
   dynamic "default_action" {
-    for_each = var.acm_certificate_arn == "" ? [1] : []
+    for_each = var.acm_certificate_arn == "" && !local.enable_origin_cloaking ? [1] : []
     content {
       type             = "forward"
       target_group_arn = aws_lb_target_group.api.arn
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = var.acm_certificate_arn == "" && local.enable_origin_cloaking ? [1] : []
+    content {
+      type = "fixed-response"
+      fixed_response {
+        content_type = "application/json"
+        message_body = "{\"detail\":\"Direct origin access forbidden.\"}"
+        status_code  = "403"
+      }
     }
   }
 }
@@ -232,9 +250,60 @@ resource "aws_lb_listener" "https" {
   ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
   certificate_arn   = var.acm_certificate_arn
 
-  default_action {
+  dynamic "default_action" {
+    for_each = !local.enable_origin_cloaking ? [1] : []
+    content {
+      type             = "forward"
+      target_group_arn = aws_lb_target_group.api.arn
+    }
+  }
+
+  dynamic "default_action" {
+    for_each = local.enable_origin_cloaking ? [1] : []
+    content {
+      type = "fixed-response"
+      fixed_response {
+        content_type = "application/json"
+        message_body = "{\"detail\":\"Direct origin access forbidden.\"}"
+        status_code  = "403"
+      }
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "http_origin_verify" {
+  count        = var.acm_certificate_arn == "" && local.enable_origin_cloaking ? 1 : 0
+  listener_arn = aws_lb_listener.http.arn
+  priority     = 1
+
+  action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.api.arn
+  }
+
+  condition {
+    http_header {
+      http_header_name = "X-Origin-Verify"
+      values           = [var.origin_verify_secret]
+    }
+  }
+}
+
+resource "aws_lb_listener_rule" "https_origin_verify" {
+  count        = var.acm_certificate_arn != "" && local.enable_origin_cloaking ? 1 : 0
+  listener_arn = aws_lb_listener.https[0].arn
+  priority     = 1
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+
+  condition {
+    http_header {
+      http_header_name = "X-Origin-Verify"
+      values           = [var.origin_verify_secret]
+    }
   }
 }
 
@@ -281,8 +350,9 @@ resource "aws_cloudwatch_log_group" "api" {
 }
 
 locals {
-  redis_tls_base_url = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
-  github_oidc_arn    = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
+  enable_origin_cloaking = nonsensitive(var.origin_verify_secret != "")
+  redis_tls_base_url     = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+  github_oidc_arn        = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
   secret_arns = compact([
     var.django_secret_key_arn,
     var.db_password_secret_arn,
@@ -649,13 +719,116 @@ resource "aws_iam_role_policy" "github_actions_deploy" {
   })
 }
 
+resource "aws_wafv2_web_acl" "cdn" {
+  count       = var.enable_waf ? 1 : 0
+  provider    = aws.us_east_1
+  name        = "${var.project_name}-${var.environment}-cdn-waf"
+  description = "CloudFront edge WAFv2 WebACL with IP rate limiting and OWASP managed rules"
+  scope       = "CLOUDFRONT"
+
+  default_action {
+    allow {}
+  }
+
+  rule {
+    name     = "RateLimitPerIP"
+    priority = 1
+
+    action {
+      block {}
+    }
+
+    statement {
+      rate_based_statement {
+        limit              = var.waf_rate_limit_per_5m
+        aggregate_key_type = "IP"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name}-rate-limit"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesAmazonIpReputationList"
+    priority = 2
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesAmazonIpReputationList"
+        vendor_name = "AWS"
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name}-ip-reputation"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  rule {
+    name     = "AWSManagedRulesCommonRuleSet"
+    priority = 3
+
+    override_action {
+      none {}
+    }
+
+    statement {
+      managed_rule_group_statement {
+        name        = "AWSManagedRulesCommonRuleSet"
+        vendor_name = "AWS"
+
+        # Allow >8 KB RLHF prompts and /api/v1/tasks/bulk/ batches without edge false positives
+        rule_action_override {
+          name = "SizeRestrictions_BODY"
+          action_to_use {
+            count {}
+          }
+        }
+      }
+    }
+
+    visibility_config {
+      cloudwatch_metrics_enabled = true
+      metric_name                = "${var.project_name}-common-rules"
+      sampled_requests_enabled   = true
+    }
+  }
+
+  visibility_config {
+    cloudwatch_metrics_enabled = true
+    metric_name                = "${var.project_name}-cdn-waf"
+    sampled_requests_enabled   = true
+  }
+
+  tags = var.common_tags
+}
+
 resource "aws_cloudfront_distribution" "cdn" {
   enabled         = true
   is_ipv6_enabled = true
+  web_acl_id      = var.enable_waf ? aws_wafv2_web_acl.cdn[0].arn : null
 
   origin {
     domain_name = aws_lb.main.dns_name
     origin_id   = "ALB"
+
+    dynamic "custom_header" {
+      for_each = local.enable_origin_cloaking ? [1] : []
+      content {
+        name  = "X-Origin-Verify"
+        value = var.origin_verify_secret
+      }
+    }
 
     custom_origin_config {
       http_port              = 80

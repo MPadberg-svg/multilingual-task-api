@@ -56,7 +56,7 @@ def test_github_oidc_role_enforces_repo_subject_and_scoped_passrole():
 
     policy_block = main_tf.split('resource "aws_iam_role_policy" "github_actions_deploy"', 1)[1]
     pass_role_block = policy_block.split('Sid    = "PassOnlyECSTaskRoles"', 1)[1].split(
-        'resource "aws_cloudfront_distribution"', 1
+        '\nresource "', 1
     )[0]
     assert "aws_iam_role.ecs_task_execution.arn" in pass_role_block
     assert "aws_iam_role.ecs_task.arn" in pass_role_block

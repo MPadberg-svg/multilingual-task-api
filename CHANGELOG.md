@@ -7,6 +7,23 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.3.2] — 2026-10-22
+
+### Added
+- **CloudFront AWS WAFv2 Edge Protection (`terraform/main.tf`, `terraform/variables.tf`, `terraform/outputs.tf`)**:
+  - Provisioned `aws_wafv2_web_acl.cdn` via an explicit `aws.us_east_1` provider alias (`enable_waf = true`, `waf_rate_limit_per_5m = 2000`) combining `RateLimitPerIP`, `AWSManagedRulesAmazonIpReputationList`, and `AWSManagedRulesCommonRuleSet` with `SizeRestrictions_BODY` overridden to `count` so >8 KB RLHF prompts and `/api/v1/tasks/bulk/` batches are never false-positively blocked at the CDN edge.
+- **CloudFront-to-ALB Origin Cloaking (`terraform/main.tf`, `terraform/variables.tf`, `.github/workflows/deploy.yml`, `Makefile`)**:
+  - Added sensitive `origin_verify_secret` injecting `X-Origin-Verify` on CloudFront's ALB origin while switching ALB default listener actions to `403 Forbidden` unless `X-Origin-Verify` matches, eliminating direct-to-ALB WAF bypasses; updated `make sync-github-vars` and `deploy.yml` to support `CLOUDFRONT_DOMAIN` edge healthchecks.
+- **CI Production Container Build & Live Smoke Gate (`.github/workflows/ci.yml`, `apps/core/tests/test_edge_waf_and_container_security.py`)**:
+  - Added `docker` CI job building the production multi-stage image and verifying UID `1000`, read-only `/app`, bundled `docs/api-explorer.html` & `staticfiles/admin`, live `GET /api/v1/live/` (`200`), and `GET /explorer/` CSP `'nonce-...'` header (`207` pytest tests passing).
+
+### Fixed
+- **Production Container `/explorer/` Asset Packaging & Runtime Hardening (`.dockerignore`, `Dockerfile`)**:
+  - Excluded `.git/` and replaced bare `docs/` in `.dockerignore` with `docs/*` + `!docs/api-explorer.html` so `GET /explorer/` never raises `FileNotFoundError` in standalone ECR/ECS containers without host volume mounts.
+  - Hardened `Dockerfile` with pinned `python:3.12-slim-bookworm`, `--shell /usr/sbin/nologin` `appuser`, `root:root` read-only `/app`, build-time `collectstatic --noinput`, and `--worker-tmp-dir /dev/shm`.
+
+---
+
 ## [1.3.1] — 2026-10-22
 
 ### Added

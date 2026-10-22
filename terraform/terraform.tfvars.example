@@ -8,11 +8,16 @@ project_name = "multilingual-task-api"
 environment  = "production"
 
 # Immutable container image tag (e.g. Git commit SHA or release tag pushed to ECR)
-image_tag = "v1.3.1"
+image_tag = "v1.3.2"
 
 # GitHub OIDC keyless deployment configuration
 github_repository           = "MPadberg-svg/multilingual-task-api"
 create_github_oidc_provider = true
+
+# CloudFront L7 WAFv2 & ALB origin-cloaking protection
+enable_waf            = true
+waf_rate_limit_per_5m = 2000
+origin_verify_secret  = "CHANGE_ME_RANDOM_32_BYTE_ORIGIN_SECRET"
 
 # Custom API domain & ACM TLS certificate ARN (enables HTTPS:443 + HTTP->HTTPS 301 redirect)
 domain_name         = "api.example.com"

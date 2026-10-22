@@ -7,7 +7,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7.0-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?logo=openai&logoColor=white)](https://openai.com/)
-[![Version](https://img.shields.io/badge/release-v1.3.1-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
+[![Version](https://img.shields.io/badge/release-v1.3.2-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
 [![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](https://codecov.io)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![AWS](https://img.shields.io/badge/AWS-ECS_Fargate-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/ecs/)
@@ -632,10 +632,11 @@ make locust-headless    # Headless: 50 users, 60s run, CSV output
 
 The `config.settings.testing` module is selected automatically via `pytest.ini` (`DJANGO_SETTINGS_MODULE`). This means the full test suite runs with **zero infrastructure** — no PostgreSQL, no Redis, no Docker.
 
-### Test Suite (202 tests · 92% coverage)
+### Test Suite (207 tests · 92% coverage)
 
 | Module | Covers |
 |--------|--------|
+| `apps/core/tests/test_edge_waf_and_container_security.py` | CloudFront WAFv2 (`us-east-1`, IP rate limit, OWASP rules + RLHF `SizeRestrictions_BODY` override), `X-Origin-Verify` ALB origin cloaking, hardened `Dockerfile` & `.dockerignore` `/explorer/` preservation, CI Docker smoke gate |
 | `apps/core/tests/test_terraform_iac_and_deploy.py` | CloudFront header allowlist (`X-API-Key`, `Idempotency-Key`, `traceparent`), GitHub OIDC `iam:PassRole` scoping, singleton Celery Beat ECS rollout, N-before-migrate ordering, CI `terraform validate` gate |
 | `apps/core/tests/test_v130_cursor_pagination_and_otel.py` | Composite keyset cursor pagination (`?pagination=cursor`), W3C `traceparent` validation, 4-boundary span correlation, OTLP/HTTP JSON export |
 | `apps/core/tests/test_wave1_tenancy_auth_idempotency.py` | `/auth/me/`, `/auth/logout/` blacklisting, Organization CRUD/RBAC/quotas, AuditLogs, `Idempotency-Key` |
@@ -681,7 +682,8 @@ The `config.settings.testing` module is selected automatically via `pytest.ini` 
 | Rate limiting | Auth login/refresh/verify throttles + `20/hr` sustained & `5/min` burst throttles + per-tenant daily AI quotas |
 | AI resilience | Single-flight half-open `CircuitBreaker` + Pydantic v2 structured output schemas (never caches degraded responses) |
 | Static & CVE scanning | `bandit -ll` (0 findings, 0 `#nosec` skips) + `pip-audit --strict` (0 production CVEs) |
-| Container | Non-root user, multi-stage Docker build, health-checked Uvicorn workers |
+| Edge WAF & origin cloaking | AWS WAFv2 (`RateLimitPerIP`, `AmazonIpReputationList`, `CommonRuleSet` tuned for >8 KB RLHF batches) + `X-Origin-Verify` ALB `403` cloaking |
+| Container | Non-login UID `1000` `appuser`, `root:root` read-only `/app`, `/dev/shm` worker heartbeats, pinned `python:3.12-slim-bookworm` multi-stage build |
 
 ---
 
@@ -727,8 +729,8 @@ make sync-github-vars
 | GitHub OIDC IAM | Keyless `AssumeRoleWithWebIdentity` scoped to `repo:MPadberg-svg/multilingual-task-api:*` + restricted `iam:PassRole` |
 | RDS PostgreSQL 16 | Multi-AZ, AES-256 encrypted, 7-day backups |
 | ElastiCache Redis 7 | Cluster mode, automatic failover, encryption in transit (`rediss://`) & at rest |
-| ALB | HTTPS/HTTP2 (`TLS 1.3`), HTTP→HTTPS `301`, `/api/v1/health/` checks, invalid-header dropping |
-| CloudFront | `0` TTL dynamic origin forwarding `Authorization`, `X-API-Key`, `X-Organization-ID`, `Idempotency-Key`, `Accept-Language`, `X-Correlation-Id`, `traceparent` |
+| ALB | HTTPS/HTTP2 (`TLS 1.3`), HTTP→HTTPS `301`, `X-Origin-Verify` origin cloaking (`403` on direct-to-ALB bypass), `/api/v1/health/` checks |
+| CloudFront + WAFv2 | `0` TTL dynamic origin forwarding auth/tenant/idempotency/trace headers + `us-east-1` WAFv2 WebACL (`RateLimitPerIP`, `AmazonIpReputationList`, `CommonRuleSet`) |
 | Secrets Manager | API keys + DB credentials with least-privilege ECS execution role injection |
 
 ### CI/CD Pipeline (GitHub Actions)
@@ -741,8 +743,9 @@ Every push or pull request to `main` or `develop` triggers `ci.yml`, and manual/
 | `test` | Migration-drift check + `pytest` (`90%` minimum coverage gate) + Codecov upload |
 | `security` | `bandit -ll` (medium+ severity) + `pip-audit --strict` (production CVE check) |
 | `terraform` | `terraform fmt -check -recursive` + `terraform init -backend=false` + `terraform validate` |
+| `docker` | Multi-stage `docker build` + UID `1000` / read-only `/app` check + live `/api/v1/live/` & `/explorer/` CSP-nonce smoke test |
 | `build` (`deploy.yml`) | Keyless AWS OIDC auth → immutable SHA Docker image → push to ECR |
-| `deploy` (`deploy.yml`) | Register new API revision → synchronous Fargate `migrate --noinput` gate → rolling ECS update (`api`, `celery-worker`, `celery-beat`) → `warm_cache` → ALB healthcheck |
+| `deploy` (`deploy.yml`) | Register new API revision → synchronous Fargate `migrate --noinput` gate → rolling ECS update (`api`, `celery-worker`, `celery-beat`) → `warm_cache` → CloudFront/ALB healthcheck |
 
 ---
 

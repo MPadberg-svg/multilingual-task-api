@@ -4,8 +4,13 @@ output "alb_dns_name" {
 }
 
 output "cloudfront_domain" {
-  description = "CloudFront distribution domain name"
+  description = "CloudFront distribution domain name (maps to GitHub Actions vars.CLOUDFRONT_DOMAIN)"
   value       = aws_cloudfront_distribution.cdn.domain_name
+}
+
+output "waf_web_acl_arn" {
+  description = "AWS WAFv2 CloudFront WebACL ARN (empty when enable_waf is false)"
+  value       = try(aws_wafv2_web_acl.cdn[0].arn, "")
 }
 
 output "ecr_repository_url" {
