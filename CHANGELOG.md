@@ -7,6 +7,24 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.3.1] — 2026-10-22
+
+### Added
+- **Terraform GitHub OIDC Federation (`terraform/main.tf`, `terraform/variables.tf`, `terraform/outputs.tf`)**:
+  - Provisioned `aws_iam_openid_connect_provider.github` (with `create_github_oidc_provider` / `existing_github_oidc_provider_arn` toggle for multi-repo AWS accounts) and `aws_iam_role.github_actions_deploy` (`github_actions_role_arn` output -> `AWS_ROLE_ARN`) scoped to `repo:MPadberg-svg/multilingual-task-api:*` with `iam:PassRole` strictly restricted to the ECS execution & task roles (`iam:PassedToService = ecs-tasks.amazonaws.com`).
+- **Singleton ECS Fargate Celery Beat Service & Telemetry Wiring (`terraform/main.tf`, `terraform/outputs.tf`)**:
+  - Provisioned `aws_ecs_task_definition.celery_beat` (`django_celery_beat.schedulers:DatabaseScheduler`) and `aws_ecs_service.celery_beat` (`desired_count = 1`, `deployment_minimum_healthy_percent = 0`, `deployment_maximum_percent = 100`) plus `ecs_celery_beat_service_name` / `ecs_celery_beat_task_family` outputs and `OTEL_EXPORTER_OTLP_ENDPOINT` / `METRICS_TOKEN` environment & secret wiring.
+- **CI Terraform Validation & GitHub Variable Sync (`Makefile`, `.github/workflows/ci.yml`, `apps/core/tests/test_terraform_iac_and_deploy.py`)**:
+  - Added `terraform` CI job (`hashicorp/setup-terraform@v3`: `terraform fmt -check`, `terraform init -backend=false`, `terraform validate`), `make tf-fmt` / `make tf-validate` / `make sync-github-vars`, and IaC/deployment contract tests.
+
+### Fixed
+- **CloudFront Edge Header Forwarding (`terraform/main.tf`)**:
+  - Added `X-API-Key`, `Idempotency-Key`, and `traceparent` to `aws_cloudfront_distribution.cdn`'s `forwarded_values.headers` so M2M authentication, idempotent mutations, and W3C distributed trace propagation are never stripped at the CDN edge.
+- **Zero-Downtime ECS Migration Ordering (`.github/workflows/deploy.yml`)**:
+  - Registered the new `$IMAGE` API task definition revision (`NEW_API_TASK_DEF_ARN`) *before* executing the synchronous `manage.py migrate --noinput` Fargate task so newly shipped migrations in commit `N` execute prior to updating live ECS services while still aborting cleanly before service rollout if migration fails.
+
+---
+
 ## [1.3.0] — 2026-10-22
 
 ### Added

@@ -1,46 +1,88 @@
 variable "aws_region" {
-  default = "us-east-1"
+  description = "AWS region for all provisioned resources"
+  type        = string
+  default     = "us-east-1"
 }
 
 variable "project_name" {
-  default = "multilingual-task-api"
+  description = "Resource naming prefix"
+  type        = string
+  default     = "multilingual-task-api"
 }
 
 variable "environment" {
-  description = "staging or production"
+  description = "Deployment environment (staging or production)"
+  type        = string
 }
 
 variable "image_tag" {
-  description = "Immutable container image tag (e.g. git SHA)"
-  default     = "v1.0.0"
+  description = "Immutable container image tag (e.g. git SHA or release tag)"
+  type        = string
+  default     = "v1.3.1"
 }
 
 variable "domain_name" {
   description = "Primary API hostname for ALLOWED_HOSTS"
+  type        = string
   default     = ""
 }
 
 variable "acm_certificate_arn" {
   description = "Optional ACM certificate ARN for HTTPS ALB listener"
+  type        = string
   default     = ""
 }
 
 variable "django_secret_key_arn" {
   description = "Secrets Manager / SSM Parameter ARN for Django SECRET_KEY"
+  type        = string
   default     = ""
 }
 
 variable "db_password_secret_arn" {
   description = "Secrets Manager / SSM Parameter ARN for POSTGRES_PASSWORD"
+  type        = string
   default     = ""
 }
 
 variable "openai_api_key_secret_arn" {
   description = "Secrets Manager / SSM Parameter ARN for OPENAI_API_KEY"
+  type        = string
+  default     = ""
+}
+
+variable "metrics_token_secret_arn" {
+  description = "Optional Secrets Manager / SSM Parameter ARN for Prometheus METRICS_TOKEN"
+  type        = string
+  default     = ""
+}
+
+variable "otel_exporter_otlp_endpoint" {
+  description = "Optional OTLP/HTTP trace collector URL (e.g. https://collector.example.com/v1/traces)"
+  type        = string
+  default     = ""
+}
+
+variable "github_repository" {
+  description = "GitHub owner/repo allowed to assume the OIDC deployment IAM role"
+  type        = string
+  default     = "MPadberg-svg/multilingual-task-api"
+}
+
+variable "create_github_oidc_provider" {
+  description = "Whether to create the AWS IAM OIDC provider for token.actions.githubusercontent.com"
+  type        = bool
+  default     = true
+}
+
+variable "existing_github_oidc_provider_arn" {
+  description = "Existing GitHub OIDC provider ARN when create_github_oidc_provider is false"
+  type        = string
   default     = ""
 }
 
 variable "vpc_cidr" {
+  type    = string
   default = "10.0.0.0/16"
 }
 
@@ -60,40 +102,49 @@ variable "public_subnet_cidrs" {
 }
 
 variable "db_instance_class" {
+  type    = string
   default = "db.t3.micro"
 }
 
 variable "db_allocated_storage" {
+  type    = number
   default = 20
 }
 
 variable "db_name" {
+  type    = string
   default = "multilingual_task_api"
 }
 
 variable "db_username" {
+  type    = string
   default = "postgres"
 }
 
 variable "db_password" {
+  type      = string
   sensitive = true
 }
 
 variable "redis_node_type" {
+  type    = string
   default = "cache.t3.micro"
 }
 
 variable "ecs_desired_count" {
+  type    = number
   default = 2
 }
 
 variable "ecs_task_cpu" {
   description = "Fargate task CPU units (1024 = 1 vCPU)"
+  type        = string
   default     = "512"
 }
 
 variable "ecs_task_memory" {
   description = "Fargate task memory (MiB)"
+  type        = string
   default     = "1024"
 }
 

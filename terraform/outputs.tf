@@ -13,6 +13,11 @@ output "ecr_repository_url" {
   value       = aws_ecr_repository.api.repository_url
 }
 
+output "github_actions_role_arn" {
+  description = "Least-privilege AWS IAM OIDC role ARN for GitHub Actions (maps to vars.AWS_ROLE_ARN)"
+  value       = try(aws_iam_role.github_actions_deploy[0].arn, "")
+}
+
 output "ecs_cluster_name" {
   description = "ECS cluster name (maps to GitHub Actions vars.ECS_CLUSTER)"
   value       = aws_ecs_cluster.main.name
@@ -28,6 +33,11 @@ output "ecs_celery_service_name" {
   value       = aws_ecs_service.celery_worker.name
 }
 
+output "ecs_celery_beat_service_name" {
+  description = "ECS Celery Beat scheduler service name (maps to GitHub Actions vars.ECS_CELERY_BEAT_SERVICE)"
+  value       = aws_ecs_service.celery_beat.name
+}
+
 output "ecs_api_task_family" {
   description = "ECS API task definition family (maps to GitHub Actions vars.ECS_TASK_DEFINITION)"
   value       = aws_ecs_task_definition.api.family
@@ -36,6 +46,11 @@ output "ecs_api_task_family" {
 output "ecs_celery_task_family" {
   description = "ECS Celery worker task definition family (maps to GitHub Actions vars.ECS_CELERY_TASK_DEFINITION)"
   value       = aws_ecs_task_definition.celery_worker.family
+}
+
+output "ecs_celery_beat_task_family" {
+  description = "ECS Celery Beat task definition family (maps to GitHub Actions vars.ECS_CELERY_BEAT_TASK_DEFINITION)"
+  value       = aws_ecs_task_definition.celery_beat.family
 }
 
 output "private_subnet_ids" {
