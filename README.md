@@ -7,7 +7,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7.0-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?logo=openai&logoColor=white)](https://openai.com/)
-[![Version](https://img.shields.io/badge/release-v1.3.2-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
+[![Version](https://img.shields.io/badge/release-v1.4.0-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
 [![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](https://codecov.io)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![AWS](https://img.shields.io/badge/AWS-ECS_Fargate-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/ecs/)
@@ -265,6 +265,7 @@ make warm-cache      # Pre-warm Redis cache
 make test            # Run full test suite with coverage (inside Docker)
 make test-fast       # Fast run, no coverage report (inside Docker)
 make test-local      # Run tests locally without Docker (uses SQLite)
+make test-integration   # Run full suite + live PG16/Redis7 concurrency tests
 make test-cov        # Generate HTML coverage report
 make lint            # flake8 + mypy
 make format          # black + isort (auto-fix)
@@ -628,14 +629,17 @@ make locust-headless    # Headless: 50 users, 60s run, CSV output
 |---------|----------------|----------|-------|
 | Tests (`pytest`) | `config.settings.testing` | SQLite `:memory:` | LocMemCache |
 | Development | `config.settings.development` | PostgreSQL | Redis |
+| CI Integration | `config.settings.ci_integration` | PostgreSQL 16 | Redis 7 (`ZlibCompressor` + `channels-redis`) |
 | Production | `config.settings.production` | PostgreSQL | Redis |
 
-The `config.settings.testing` module is selected automatically via `pytest.ini` (`DJANGO_SETTINGS_MODULE`). This means the full test suite runs with **zero infrastructure** — no PostgreSQL, no Redis, no Docker.
+The `config.settings.testing` module is selected automatically via `pytest.ini` (`DJANGO_SETTINGS_MODULE`). This means the full test suite runs locally with **zero infrastructure** — while CI also executes the complete suite plus live multi-connection concurrency tests against real `postgres:16-alpine` and `redis:7-alpine` service containers.
 
-### Test Suite (207 tests · 92% coverage)
+### Test Suite (215 tests across SQLite & PostgreSQL 16 + Redis 7 · 92% coverage)
 
 | Module | Covers |
 |--------|--------|
+| `tests/integration/test_postgres_redis_integration.py` | Live PostgreSQL 16 `FOR UPDATE SKIP LOCKED LIMIT 1` non-blocking lease & 8-thread stampede, Redis 7 `ZlibCompressor` + `INCRBY`, `EventPublisher` Pub/Sub, `channels-redis` WebSockets |
+| `apps/core/tests/test_distributed_cb_and_claim_sql.py` | Cluster-wide Redis `CircuitBreaker` (`shared_cache=True`) single-flight probing & fallback, single-row `LIMIT 1` claim SQL contract |
 | `apps/core/tests/test_edge_waf_and_container_security.py` | CloudFront WAFv2 (`us-east-1`, IP rate limit, OWASP rules + RLHF `SizeRestrictions_BODY` override), `X-Origin-Verify` ALB origin cloaking, hardened `Dockerfile` & `.dockerignore` `/explorer/` preservation, CI Docker smoke gate |
 | `apps/core/tests/test_terraform_iac_and_deploy.py` | CloudFront header allowlist (`X-API-Key`, `Idempotency-Key`, `traceparent`), GitHub OIDC `iam:PassRole` scoping, singleton Celery Beat ECS rollout, N-before-migrate ordering, CI `terraform validate` gate |
 | `apps/core/tests/test_v130_cursor_pagination_and_otel.py` | Composite keyset cursor pagination (`?pagination=cursor`), W3C `traceparent` validation, 4-boundary span correlation, OTLP/HTTP JSON export |
@@ -680,7 +684,7 @@ The `config.settings.testing` module is selected automatically via `pytest.ini` 
 | Secrets | Environment & AWS Secrets Manager injection — zero secrets stored in repository |
 | Audit trail | Immutable `AuditLog` — records actor, tenant, IP (`NUM_TRUSTED_PROXIES`-aware), user agent, and structured metadata |
 | Rate limiting | Auth login/refresh/verify throttles + `20/hr` sustained & `5/min` burst throttles + per-tenant daily AI quotas |
-| AI resilience | Single-flight half-open `CircuitBreaker` + Pydantic v2 structured output schemas (never caches degraded responses) |
+| AI resilience | Cluster-wide Redis-coordinated single-flight `CircuitBreaker` (with local thread-safe fallback) + Pydantic v2 structured output schemas |
 | Static & CVE scanning | `bandit -ll` (0 findings, 0 `#nosec` skips) + `pip-audit --strict` (0 production CVEs) |
 | Edge WAF & origin cloaking | AWS WAFv2 (`RateLimitPerIP`, `AmazonIpReputationList`, `CommonRuleSet` tuned for >8 KB RLHF batches) + `X-Origin-Verify` ALB `403` cloaking |
 | Container | Non-login UID `1000` `appuser`, `root:root` read-only `/app`, `/dev/shm` worker heartbeats, pinned `python:3.12-slim-bookworm` multi-stage build |
@@ -744,6 +748,7 @@ Every push or pull request to `main` or `develop` triggers `ci.yml`, and manual/
 | `security` | `bandit -ll` (medium+ severity) + `pip-audit --strict` (production CVE check) |
 | `terraform` | `terraform fmt -check -recursive` + `terraform init -backend=false` + `terraform validate` |
 | `docker` | Multi-stage `docker build` + UID `1000` / read-only `/app` check + live `/api/v1/live/` & `/explorer/` CSP-nonce smoke test |
+| `integration` | Live `postgres:16-alpine` + `redis:7-alpine` service containers running `migrate` + full `215`-test suite (`FOR UPDATE SKIP LOCKED LIMIT 1`, `ZlibCompressor`, `channels-redis`) |
 | `build` (`deploy.yml`) | Keyless AWS OIDC auth → immutable SHA Docker image → push to ECR |
 | `deploy` (`deploy.yml`) | Register new API revision → synchronous Fargate `migrate --noinput` gate → rolling ECS update (`api`, `celery-worker`, `celery-beat`) → `warm_cache` → CloudFront/ALB healthcheck |
 
