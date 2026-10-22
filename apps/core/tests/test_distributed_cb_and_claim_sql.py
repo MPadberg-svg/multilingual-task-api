@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 from django.core.cache import cache
-from django.db import connections
+from django.db import connections, transaction
 from django.db.models import Case, IntegerField, Q, Value, When
 from django.utils import timezone
 
@@ -101,6 +101,7 @@ class TestSharedCacheCircuitBreaker:
         assert cb.state == CircuitState.OPEN
 
 
+@pytest.mark.django_db
 def test_claim_lock_query_compiles_single_row_limit_for_update_skip_locked() -> None:
     """
     Ensure the task-claiming lock query uses ORDER BY (-priority_rank, created_at)
@@ -115,18 +116,22 @@ def test_claim_lock_query_compiles_single_row_limit_for_update_skip_locked() -> 
         default=Value(1),
         output_field=IntegerField(),
     )
-    qs = (
-        Task.objects.filter(id__in=[uuid.uuid4(), uuid.uuid4()])
-        .filter(Q(claimed_until__isnull=True) | Q(claimed_until__lte=now))
-        .annotate(priority_rank=priority_rank)
-        .order_by("-priority_rank", "created_at")
-    )
-    if connections["default"].features.has_select_for_update_skip_locked:
-        qs = qs.select_for_update(skip_locked=True)
-    sliced = qs[:1]
-    sql = str(sliced.query)
+    with transaction.atomic():
+        qs = (
+            Task.objects.filter(id__in=[uuid.uuid4(), uuid.uuid4()])
+            .filter(Q(claimed_until__isnull=True) | Q(claimed_until__lte=now))
+            .annotate(priority_rank=priority_rank)
+            .order_by("-priority_rank", "created_at")
+        )
+        has_skip_locked = connections["default"].features.has_select_for_update_skip_locked
+        if has_skip_locked:
+            qs = qs.select_for_update(skip_locked=True)
+        sliced = qs[:1]
+        sql = str(sliced.query)
     assert "GROUP BY" not in sql
     assert "LIMIT 1" in sql
+    if has_skip_locked:
+        assert "FOR UPDATE SKIP LOCKED" in sql
 
 
 def test_ci_workflow_runs_postgres_16_and_redis_7_service_integration_matrix() -> None:

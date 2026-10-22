@@ -139,7 +139,12 @@ def test_postgres_concurrent_annotator_stampede_assigns_disjoint_leases() -> Non
     """
     cache.clear()
     owner = User.objects.create_user(email="pg-stampede-owner@example.com", password="pw")
-    org = Organization.objects.create(name="PG Stampede Org", slug="pg-stampede-org")
+    org = Organization.objects.create(
+        name="PG Stampede Org",
+        slug="pg-stampede-org",
+        plan="enterprise",
+        max_users=50,
+    )
     OrganizationMember.objects.create(user=owner, organization=org, role="owner")
 
     expected_ids: set[str] = set()
