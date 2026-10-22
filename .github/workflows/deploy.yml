@@ -109,12 +109,27 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Register updated API task definition revision
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_DEFINITION" \
+            --query taskDefinition \
+          | jq --arg IMG "$IMAGE" '
+              del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+              | (.containerDefinitions[] | select(.name == "api") | .image) = $IMG
+            ' > task-def-api.json
+          NEW_API_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-def-api.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "NEW_API_TASK_DEF_ARN=$NEW_API_ARN" >> "$GITHUB_ENV"
+
       - name: Run database migrations synchronously before rollout
         run: |
           TASK_ARN=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
             --launch-type FARGATE \
-            --task-definition "$ECS_TASK_DEFINITION" \
+            --task-definition "$NEW_API_TASK_DEF_ARN" \
             --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
             --overrides "{\"containerOverrides\": [{\"name\": \"api\", \"command\": [\"python\", \"manage.py\", \"migrate\", \"--noinput\"]}]}" \
             --query 'tasks[0].taskArn' \
@@ -131,29 +146,13 @@ jobs:
             exit 1
           fi
 
-      - name: Fetch current API task definition
-        run: |
-          aws ecs describe-task-definition \
-            --task-definition "$ECS_TASK_DEFINITION" \
-            --query taskDefinition \
-          | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
-          > task-def-api.json
-
-      - name: Render updated API task definition
-        uses: aws-actions/amazon-ecs-render-task-definition@v1
-        id: render-api-task
-        with:
-          task-definition: task-def-api.json
-          container-name: api
-          image: ${{ env.IMAGE }}
-
       - name: Deploy ECS API service (rolling update)
-        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-        with:
-          task-definition: ${{ steps.render-api-task.outputs.task-definition }}
-          service: ${{ env.ECS_SERVICE }}
-          cluster: ${{ env.ECS_CLUSTER }}
-          wait-for-service-stability: true
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$NEW_API_TASK_DEF_ARN" > /dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
 
       - name: Deploy ECS Celery worker service (if configured)
         if: env.ECS_CELERY_SERVICE != '' && env.ECS_CELERY_TASK_DEFINITION != ''
@@ -200,7 +199,7 @@ jobs:
           TASK_ARN=$(aws ecs run-task \
             --cluster "$ECS_CLUSTER" \
             --launch-type FARGATE \
-            --task-definition "$ECS_TASK_DEFINITION" \
+            --task-definition "$NEW_API_TASK_DEF_ARN" \
             --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
             --overrides "{\"containerOverrides\": [{\"name\": \"api\", \"command\": [\"python\", \"manage.py\", \"warm_cache\", \"--languages\", \"en\", \"es\", \"fr\"]}]}" \
             --query 'tasks[0].taskArn' \

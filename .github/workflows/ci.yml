@@ -68,3 +68,20 @@ jobs:
         with:
           name: bandit-report
           path: bandit-report.json
+
+  terraform:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Check Terraform HCL formatting
+        run: terraform fmt -check -recursive terraform/
+      - name: Initialize & validate Terraform IaC
+        working-directory: terraform
+        run: |
+          terraform init -backend=false
+          terraform validate
+

@@ -1,6 +1,6 @@
 .PHONY: up down build migrate seed test test-cov test-local cache-flush lint format shell logs \
         docker-clean locust-benchmark create-admin warm-cache setup security test-fast \
-        locust-headless
+        locust-headless tf-fmt tf-validate sync-github-vars
 
 # ─── Docker ───────────────────────────────────────────────────────────────────
 
@@ -98,3 +98,28 @@ setup: build up migrate seed create-admin warm-cache
 	@echo "✅ Stack ready at http://localhost:8000"
 	@echo "📚 Docs at http://localhost:8000/api/docs/"
 	@echo "🔐 Admin at http://localhost:8000/admin/"
+
+# ─── Infrastructure & Cloud Rollout ───────────────────────────────────────────
+
+tf-fmt:
+	terraform fmt -check -recursive terraform/
+
+tf-validate:
+	terraform -chdir=terraform init -backend=false
+	terraform -chdir=terraform validate
+
+sync-github-vars:
+	@OUT=$$(terraform -chdir=terraform output -json); \
+	gh variable set AWS_REGION --body "$${AWS_REGION:-us-east-1}"; \
+	gh variable set AWS_ROLE_ARN --body "$$(echo "$$OUT" | jq -r '.github_actions_role_arn.value')"; \
+	gh variable set ECR_REPOSITORY --body "$$(echo "$$OUT" | jq -r '.ecr_repository_url.value')"; \
+	gh variable set ECS_CLUSTER --body "$$(echo "$$OUT" | jq -r '.ecs_cluster_name.value')"; \
+	gh variable set ECS_SERVICE --body "$$(echo "$$OUT" | jq -r '.ecs_api_service_name.value')"; \
+	gh variable set ECS_TASK_DEFINITION --body "$$(echo "$$OUT" | jq -r '.ecs_api_task_family.value')"; \
+	gh variable set ECS_CELERY_SERVICE --body "$$(echo "$$OUT" | jq -r '.ecs_celery_service_name.value')"; \
+	gh variable set ECS_CELERY_TASK_DEFINITION --body "$$(echo "$$OUT" | jq -r '.ecs_celery_task_family.value')"; \
+	gh variable set ECS_CELERY_BEAT_SERVICE --body "$$(echo "$$OUT" | jq -r '.ecs_celery_beat_service_name.value')"; \
+	gh variable set ECS_CELERY_BEAT_TASK_DEFINITION --body "$$(echo "$$OUT" | jq -r '.ecs_celery_beat_task_family.value')"; \
+	gh variable set PRIVATE_SUBNET_IDS --body "$$(echo "$$OUT" | jq -r '.private_subnet_ids.value | map("\"" + . + "\"") | join(",")')"; \
+	gh variable set ECS_SECURITY_GROUP_ID --body "$$(echo "$$OUT" | jq -r '.ecs_security_group_id.value')"
+

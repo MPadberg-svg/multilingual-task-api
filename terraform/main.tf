@@ -135,12 +135,12 @@ resource "aws_db_instance" "postgres" {
   vpc_security_group_ids = [aws_security_group.rds.id]
   db_subnet_group_name   = aws_db_subnet_group.main.name
 
-  multi_az                    = var.environment == "production"
-  deletion_protection         = var.environment == "production"
-  skip_final_snapshot         = var.environment != "production"
-  final_snapshot_identifier   = var.environment == "production" ? "${var.project_name}-final-snapshot" : null
-  copy_tags_to_snapshot       = true
-  backup_retention_period     = 7
+  multi_az                     = var.environment == "production"
+  deletion_protection          = var.environment == "production"
+  skip_final_snapshot          = var.environment != "production"
+  final_snapshot_identifier    = var.environment == "production" ? "${var.project_name}-final-snapshot" : null
+  copy_tags_to_snapshot        = true
+  backup_retention_period      = 7
   performance_insights_enabled = true
 
   tags = var.common_tags
@@ -282,10 +282,12 @@ resource "aws_cloudwatch_log_group" "api" {
 
 locals {
   redis_tls_base_url = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+  github_oidc_arn    = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
   secret_arns = compact([
     var.django_secret_key_arn,
     var.db_password_secret_arn,
     var.openai_api_key_secret_arn,
+    var.metrics_token_secret_arn,
   ])
   shared_env = [
     { name = "DJANGO_SETTINGS_MODULE", value = "config.settings.production" },
@@ -298,11 +300,14 @@ locals {
     { name = "CELERY_BROKER_URL", value = "${local.redis_tls_base_url}/1" },
     { name = "CELERY_RESULT_BACKEND", value = "${local.redis_tls_base_url}/2" },
     { name = "TRUSTED_PROXY_COUNT", value = "2" },
+    { name = "OTEL_SERVICE_NAME", value = var.project_name },
+    { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_exporter_otlp_endpoint },
   ]
   shared_secrets = compact([
     var.django_secret_key_arn != "" ? jsonencode({ name = "SECRET_KEY", valueFrom = var.django_secret_key_arn }) : "",
     var.db_password_secret_arn != "" ? jsonencode({ name = "POSTGRES_PASSWORD", valueFrom = var.db_password_secret_arn }) : "",
     var.openai_api_key_secret_arn != "" ? jsonencode({ name = "OPENAI_API_KEY", valueFrom = var.openai_api_key_secret_arn }) : "",
+    var.metrics_token_secret_arn != "" ? jsonencode({ name = "METRICS_TOKEN", valueFrom = var.metrics_token_secret_arn }) : "",
   ])
 }
 
@@ -396,6 +401,39 @@ resource "aws_ecs_task_definition" "celery_worker" {
   tags = var.common_tags
 }
 
+resource "aws_ecs_task_definition" "celery_beat" {
+  family                   = "${var.project_name}-celery-beat"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.ecs_task_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  container_definitions = jsonencode([{
+    name      = "celery-beat"
+    image     = "${aws_ecr_repository.api.repository_url}:${var.image_tag}"
+    essential = true
+    command = [
+      "celery", "-A", "config.celery", "beat",
+      "--loglevel=info",
+      "--scheduler", "django_celery_beat.schedulers:DatabaseScheduler"
+    ]
+    environment = local.shared_env
+    secrets     = [for s in local.shared_secrets : jsondecode(s)]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        awslogs-group         = aws_cloudwatch_log_group.api.name
+        awslogs-region        = var.aws_region
+        awslogs-stream-prefix = "celery-beat"
+      }
+    }
+  }])
+
+  tags = var.common_tags
+}
+
 resource "aws_ecs_cluster" "main" {
   name = "${var.project_name}-cluster"
 
@@ -449,6 +487,25 @@ resource "aws_ecs_service" "celery_worker" {
   tags = var.common_tags
 }
 
+resource "aws_ecs_service" "celery_beat" {
+  name            = "${var.project_name}-celery-beat"
+  cluster         = aws_ecs_cluster.main.id
+  task_definition = aws_ecs_task_definition.celery_beat.arn
+
+  desired_count                      = 1
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
+  launch_type                        = "FARGATE"
+
+  network_configuration {
+    subnets          = module.vpc.private_subnets
+    security_groups  = [aws_security_group.ecs.id]
+    assign_public_ip = false
+  }
+
+  tags = var.common_tags
+}
+
 resource "aws_appautoscaling_target" "ecs" {
   max_capacity       = 10
   min_capacity       = 2
@@ -481,6 +538,117 @@ resource "aws_ecr_repository" "api" {
   }
 }
 
+resource "aws_iam_openid_connect_provider" "github" {
+  count = var.create_github_oidc_provider ? 1 : 0
+  url   = "https://token.actions.githubusercontent.com"
+
+  client_id_list = ["sts.amazonaws.com"]
+
+  thumbprint_list = [
+    "6938fd4d98bab03faadb97b34396831e3780aea1",
+    "1c58a3a8518e8759bf075b76b750d4f2df264fcd",
+  ]
+
+  tags = var.common_tags
+}
+
+resource "aws_iam_role" "github_actions_deploy" {
+  count = local.github_oidc_arn != "" ? 1 : 0
+  name  = "${var.project_name}-${var.environment}-github-oidc-deploy"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Federated = local.github_oidc_arn
+      }
+      Action = "sts:AssumeRoleWithWebIdentity"
+      Condition = {
+        StringEquals = {
+          "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
+        }
+        StringLike = {
+          "token.actions.githubusercontent.com:sub" = "repo:${var.github_repository}:*"
+        }
+      }
+    }]
+  })
+
+  tags = var.common_tags
+}
+
+resource "aws_iam_role_policy" "github_actions_deploy" {
+  count = local.github_oidc_arn != "" ? 1 : 0
+  name  = "${var.project_name}-github-deploy-least-privilege"
+  role  = aws_iam_role.github_actions_deploy[0].id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "ECRAuth"
+        Effect   = "Allow"
+        Action   = ["ecr:GetAuthorizationToken"]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECRRepositoryPushPull"
+        Effect = "Allow"
+        Action = [
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:BatchGetImage",
+          "ecr:CompleteLayerUpload",
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:InitiateLayerUpload",
+          "ecr:PutImage",
+          "ecr:UploadLayerPart",
+        ]
+        Resource = aws_ecr_repository.api.arn
+      },
+      {
+        Sid    = "ECSTaskDefinitionsAndOneOffTasks"
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeTaskDefinition",
+          "ecs:DescribeTasks",
+          "ecs:RegisterTaskDefinition",
+          "ecs:RunTask",
+          "elasticloadbalancing:DescribeLoadBalancers",
+        ]
+        Resource = "*"
+      },
+      {
+        Sid    = "ECSServiceRollouts"
+        Effect = "Allow"
+        Action = [
+          "ecs:DescribeServices",
+          "ecs:UpdateService",
+        ]
+        Resource = [
+          aws_ecs_service.api.id,
+          aws_ecs_service.celery_worker.id,
+          aws_ecs_service.celery_beat.id,
+        ]
+      },
+      {
+        Sid    = "PassOnlyECSTaskRoles"
+        Effect = "Allow"
+        Action = ["iam:PassRole"]
+        Resource = [
+          aws_iam_role.ecs_task_execution.arn,
+          aws_iam_role.ecs_task.arn,
+        ]
+        Condition = {
+          StringEquals = {
+            "iam:PassedToService" = "ecs-tasks.amazonaws.com"
+          }
+        }
+      },
+    ]
+  })
+}
+
 resource "aws_cloudfront_distribution" "cdn" {
   enabled         = true
   is_ipv6_enabled = true
@@ -497,8 +665,8 @@ resource "aws_cloudfront_distribution" "cdn" {
     }
   }
 
-  # Dynamic API behavior: forward all methods, auth/tenant/lang headers, and
-  # query strings with 0 TTL at the CDN edge so private user/tenant responses
+  # Dynamic API behavior: forward all methods, auth/tenant/lang/idempotency/trace headers,
+  # and query strings with 0 TTL at the CDN edge so private user/tenant responses
   # are never cached publicly across callers (application-level caching runs in Redis).
   default_cache_behavior {
     allowed_methods  = ["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]
@@ -508,11 +676,14 @@ resource "aws_cloudfront_distribution" "cdn" {
     forwarded_values {
       query_string = true
       headers = [
-        "Authorization",
         "Accept-Language",
-        "X-Organization-ID",
-        "X-Correlation-Id",
+        "Authorization",
+        "Idempotency-Key",
         "Origin",
+        "X-API-Key",
+        "X-Correlation-Id",
+        "X-Organization-ID",
+        "traceparent",
       ]
       cookies {
         forward = "all"

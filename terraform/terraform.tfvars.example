@@ -7,12 +7,19 @@ aws_region   = "us-east-1"
 project_name = "multilingual-task-api"
 environment  = "production"
 
-# Immutable container image tag (e.g. Git commit SHA pushed to ECR)
-image_tag = "v1.1.0"
+# Immutable container image tag (e.g. Git commit SHA or release tag pushed to ECR)
+image_tag = "v1.3.1"
+
+# GitHub OIDC keyless deployment configuration
+github_repository           = "MPadberg-svg/multilingual-task-api"
+create_github_oidc_provider = true
 
 # Custom API domain & ACM TLS certificate ARN (enables HTTPS:443 + HTTP->HTTPS 301 redirect)
 domain_name         = "api.example.com"
 acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/00000000-0000-0000-0000-000000000000"
+
+# Optional OTLP/HTTP trace collector endpoint
+otel_exporter_otlp_endpoint = ""
 
 # Database sizing & bootstrap master password (pass via TF_VAR_db_password in CI)
 db_instance_class    = "db.t3.micro"
@@ -31,3 +38,4 @@ ecs_task_memory   = "1024"
 django_secret_key_arn     = "arn:aws:secretsmanager:us-east-1:123456789012:secret:multilingual-task-api/production/SECRET_KEY"
 db_password_secret_arn    = "arn:aws:secretsmanager:us-east-1:123456789012:secret:multilingual-task-api/production/POSTGRES_PASSWORD"
 openai_api_key_secret_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:multilingual-task-api/production/OPENAI_API_KEY"
+metrics_token_secret_arn  = ""
