@@ -30,6 +30,7 @@ from apps.ai_assist.schemas import (
     RLHFTestCaseSchema,
     TranslationSuggestionSchema,
 )
+from apps.core.finops import AIBudgetExceededError, enforce_org_ai_budget
 from apps.core.security import InputValidator
 from apps.core.tracing import start_span
 from apps.core.views import record_ai_token_usage, record_cache_hit, record_cache_miss
@@ -38,6 +39,12 @@ logger = logging.getLogger(__name__)
 
 _ACTIVE_ORG_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "_ACTIVE_ORG_ID", default=None
+)
+_ACTIVE_USER_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_ACTIVE_USER_ID", default=None
+)
+_ACTIVE_OPERATION: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "_ACTIVE_OPERATION", default="chat.completions"
 )
 
 CACHE_TTL_AI: int = settings.CACHE_TTL.get("ai_suggestions", 3600)
@@ -141,12 +148,18 @@ class AIService:
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     organization_id=_ACTIVE_ORG_ID.get(),
+                    user_id=_ACTIVE_USER_ID.get(),
+                    operation=_ACTIVE_OPERATION.get(),
+                    model_name=str(settings.OPENAI_MODEL),
                 )
                 content = response.choices[0].message.content
                 return content or ""
 
+        enforce_org_ai_budget(_ACTIVE_ORG_ID.get())
         try:
             return str(openai_circuit_breaker.call(_raw_call))
+        except AIBudgetExceededError:
+            raise
         except CircuitOpenError as exc:
             logger.warning("OpenAI circuit is OPEN: %s", exc)
             raise
@@ -201,12 +214,17 @@ class AIService:
             return dict(cached)
 
         record_cache_miss()
+        enforce_org_ai_budget(organization_id)
         prompt = self.template_manager.render("task_translation", user_input=sanitized, lang=lang)
-        token = _ACTIVE_ORG_ID.set(organization_id)
+        org_tok = _ACTIVE_ORG_ID.set(organization_id)
+        usr_tok = _ACTIVE_USER_ID.set(user_id)
+        op_tok = _ACTIVE_OPERATION.set("suggest_task_translations")
         try:
             raw = self._call_llm(prompt, temperature=0.3)
         finally:
-            _ACTIVE_ORG_ID.reset(token)
+            _ACTIVE_OPERATION.reset(op_tok)
+            _ACTIVE_USER_ID.reset(usr_tok)
+            _ACTIVE_ORG_ID.reset(org_tok)
         parsed = _safe_json_parse(raw)
         if not parsed:
             raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")
@@ -239,12 +257,17 @@ class AIService:
             return dict(cached)
 
         record_cache_miss()
+        enforce_org_ai_budget(organization_id)
         prompt = self.template_manager.render("prompt_evaluation", user_input=sanitized, lang=lang)
-        token = _ACTIVE_ORG_ID.set(organization_id)
+        org_tok = _ACTIVE_ORG_ID.set(organization_id)
+        usr_tok = _ACTIVE_USER_ID.set(user_id)
+        op_tok = _ACTIVE_OPERATION.set("evaluate_prompt_quality")
         try:
             raw = self._call_llm(prompt, temperature=0.2)
         finally:
-            _ACTIVE_ORG_ID.reset(token)
+            _ACTIVE_OPERATION.reset(op_tok)
+            _ACTIVE_USER_ID.reset(usr_tok)
+            _ACTIVE_ORG_ID.reset(org_tok)
         parsed = _safe_json_parse(raw)
         if not parsed:
             raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")
@@ -277,12 +300,17 @@ class AIService:
             return dict(cached)
 
         record_cache_miss()
+        enforce_org_ai_budget(organization_id)
         prompt = self.template_manager.render("rlhf_generation", user_input=sanitized, lang=lang)
-        token = _ACTIVE_ORG_ID.set(organization_id)
+        org_tok = _ACTIVE_ORG_ID.set(organization_id)
+        usr_tok = _ACTIVE_USER_ID.set(user_id)
+        op_tok = _ACTIVE_OPERATION.set("generate_rlhf_test_cases")
         try:
             raw = self._call_llm(prompt, temperature=0.4)
         finally:
-            _ACTIVE_ORG_ID.reset(token)
+            _ACTIVE_OPERATION.reset(op_tok)
+            _ACTIVE_USER_ID.reset(usr_tok)
+            _ACTIVE_ORG_ID.reset(org_tok)
         parsed = _safe_json_parse(raw)
         if not parsed:
             raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")

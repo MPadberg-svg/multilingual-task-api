@@ -67,11 +67,13 @@ X_FRAME_OPTIONS: str = "DENY"
 # =============================================================================
 # Database — Persistent connections with statement timeout
 # =============================================================================
-DATABASES["default"]["CONN_MAX_AGE"] = 600  # type: ignore[index]  # noqa: F405
-DATABASES["default"]["OPTIONS"] = {  # type: ignore[index]  # noqa: F405
-    "options": "-c statement_timeout=30000",  # 30 seconds
-    "connect_timeout": 10,
-}
+for _db_alias in ("default", "replica"):
+    if _db_alias in DATABASES:  # noqa: F405
+        DATABASES[_db_alias]["CONN_MAX_AGE"] = 600  # type: ignore[index]  # noqa: F405
+        DATABASES[_db_alias]["OPTIONS"] = {  # type: ignore[index]  # noqa: F405
+            "options": "-c statement_timeout=30000",  # 30 seconds
+            "connect_timeout": 10,
+        }
 
 # =============================================================================
 # DRF — JSON-only responses in production (no browsable API)

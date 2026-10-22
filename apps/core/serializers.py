@@ -15,6 +15,7 @@ from apps.core.models import (
     Organization,
     OrganizationAPIKey,
     OrganizationMember,
+    OrganizationSSOConfig,
     OutboxEvent,
     WebhookDelivery,
     WebhookEndpoint,
@@ -333,3 +334,90 @@ class OutboxEventSerializer(serializers.ModelSerializer):
             "created_at",
         ]
         read_only_fields = fields
+
+
+class OrganizationSSOConfigSerializer(serializers.ModelSerializer):
+    """Read/update serializer for tenant OIDC SSO and SCIM 2.0 provisioning configuration."""
+
+    class Meta:
+        model = OrganizationSSOConfig
+        fields = [
+            "id",
+            "organization",
+            "enabled",
+            "oidc_issuer",
+            "oidc_client_id",
+            "jwks_json",
+            "public_key_pem",
+            "allowed_domains",
+            "role_claim",
+            "role_mapping",
+            "default_role",
+            "jit_provisioning",
+            "scim_enabled",
+            "scim_token_prefix",
+            "created_at",
+            "updated_at",
+        ]
+        read_only_fields = [
+            "id",
+            "organization",
+            "scim_token_prefix",
+            "created_at",
+            "updated_at",
+        ]
+
+    def validate_oidc_issuer(self, value: str) -> str:
+        cleaned = value.strip()
+        if cleaned and not cleaned.startswith("https://"):
+            raise serializers.ValidationError("OIDC issuer URL must use 'https://'.")
+        return cleaned
+
+    def validate_allowed_domains(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            raise serializers.ValidationError("allowed_domains must be a list of domain strings.")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not item.strip():
+                raise serializers.ValidationError("Each allowed domain must be a non-empty string.")
+            dom = item.strip().lower().lstrip("@")
+            if "." not in dom or "/" in dom or " " in dom:
+                raise serializers.ValidationError(f"Invalid domain '{item}'.")
+            normalized.append(dom)
+        return sorted(set(normalized))
+
+    def validate_role_mapping(self, value: Any) -> dict[str, str]:
+        if not isinstance(value, dict):
+            raise serializers.ValidationError(
+                "role_mapping must be an object mapping group -> role."
+            )
+        allowed_targets = {"viewer", "contributor", "annotator", "reviewer", "admin"}
+        cleaned: dict[str, str] = {}
+        for k, v in value.items():
+            key_str = str(k).strip()
+            val_str = str(v).strip().lower()
+            if not key_str or val_str not in allowed_targets:
+                raise serializers.ValidationError(
+                    f"Invalid role mapping '{k} -> {v}'. Allowed target roles: {sorted(allowed_targets)}."
+                )
+            cleaned[key_str] = val_str
+        return cleaned
+
+
+class OIDCTokenExchangeSerializer(serializers.Serializer):
+    """Payload for ``POST /api/v1/auth/sso/oidc/exchange/``."""
+
+    organization_slug = serializers.SlugField(required=True)
+    id_token = serializers.CharField(required=True, allow_blank=False, trim_whitespace=True)
+
+
+class OrganizationFinOpsBudgetSerializer(serializers.Serializer):
+    """Payload for ``PATCH /api/v1/organizations/<org_id>/finops/``."""
+
+    monthly_ai_token_budget = serializers.IntegerField(min_value=0, required=False)
+    monthly_ai_cost_budget_microusd = serializers.IntegerField(min_value=0, required=False)
+    ai_budget_alert_threshold_pct = serializers.IntegerField(
+        min_value=1,
+        max_value=100,
+        required=False,
+    )

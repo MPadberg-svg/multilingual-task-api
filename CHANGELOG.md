@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.7.0] — 2026-10-22
+
+### Added
+- **Enterprise OIDC SSO Token Exchange & RFC 7643/7644 SCIM 2.0 Provisioning (`apps/core/sso.py`, `apps/core/models.py`, `apps/core/tenant_views.py`, `config/urls.py`)**:
+  - Added `OrganizationSSOConfig` (`FORCE ROW LEVEL SECURITY` protected) with HTTPS issuer enforcement, pinned JWKS/PEM asymmetric `RS256`/`ES256` signature verification (blocking `alg=none` and `HS256` key-confusion payloads), domain allowlists, and IdP group-to-RBAC role mapping (`viewer`, `contributor` / `annotator` / `reviewer`, `admin`, preserving existing `owner` roles).
+  - Added `POST /api/v1/auth/sso/oidc/exchange/`, `GET/PATCH /api/v1/organizations/{org_id}/sso/`, `POST /api/v1/organizations/{org_id}/sso/scim-token/`, and RFC 7643/7644 SCIM 2.0 `/api/v1/organizations/{org_id}/scim/v2/Users` & `/Users/{member_id}` supporting `userName`/`externalId` filtering, `PatchOp` updates, multi-tenant-safe `active=false` offboarding with automatic tenant API key revocation, and `scim.user_provisioned` / `scim.user_deprovisioned` Transactional Outbox events.
+- **Per-Tenant AI Token Budget Quotas & Spend Alerts (`apps/core/finops.py`, `apps/core/models.py`, `apps/ai_assist/services.py`, `apps/ai_assist/views.py`, `apps/tasks/tasks.py`)**:
+  - Added `AIUsageLog` (`FORCE ROW LEVEL SECURITY` protected) and per-organization `monthly_ai_token_budget`, `monthly_ai_cost_budget_microusd`, and `ai_budget_alert_threshold_pct` overrides backed by plan-tier defaults (`AI_PLAN_MONTHLY_TOKEN_BUDGETS`, `AI_PLAN_MONTHLY_COST_MICROUSD`) and Redis-cached SQL rollups.
+  - Enforced pre-call `AIBudgetExceededError` (`429 Too Many Requests`, `code="ai_budget_exceeded"`) on uncached AI Assist calls, graceful skip in Celery `generate_task_translations`, deduplicated once-per-period `ai.budget_threshold_reached` and `ai.budget_exceeded` Transactional Outbox alerts, and `GET/PATCH /api/v1/organizations/{org_id}/finops/`.
+- **RLS-Aware Read-Replica Query Routing for Analytics & Exports (`apps/core/db_router.py`, `apps/core/rls.py`, `apps/tasks/views.py`, `config/settings/`)**:
+  - Added `ReplicaDatabaseRouter` and `use_read_replica()` steering `GET /api/v1/tasks/stats/`, streaming `GET /api/v1/tasks/export/`, `GET /api/v1/organizations/{org_id}/usage/`, and `GET /api/v1/organizations/{org_id}/finops/` to `DATABASES["replica"]` (`POSTGRES_REPLICA_HOST`, emitting `X-Query-Target: replica | primary`) while pinning writes and `in_atomic_block` read-your-own-writes transactions to `default`.
+  - Extended `PostgresRLSMiddleware`, `rls_context`, and `rls_bypass` (plus lazy NDJSON export streaming) to synchronize PostgreSQL 16 RLS session GUCs onto `connections["replica"]` with deterministic connection-pool scrub on exit.
+
+---
+
 ## [1.6.0] — 2026-10-22
 
 ### Added

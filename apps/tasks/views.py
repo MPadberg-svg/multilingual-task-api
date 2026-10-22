@@ -30,6 +30,7 @@ from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
 from django_filters.rest_framework import DjangoFilterBackend
+from drf_spectacular.utils import extend_schema
 from rest_framework import filters, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -37,8 +38,10 @@ from rest_framework.renderers import BaseRenderer, JSONRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
 
+from apps.core.db_router import use_read_replica
 from apps.core.models import AuditLog
 from apps.core.outbox import enqueue_outbox_event
+from apps.core.rls import get_effective_rls_scope, rls_context
 from apps.core.views import record_cache_hit, record_cache_miss
 from apps.tasks.consensus import evaluate_task_consensus
 from apps.tasks.filters import TaskFilter
@@ -524,6 +527,62 @@ class TaskViewSet(viewsets.ModelViewSet):
             status=status.HTTP_201_CREATED,
         )
 
+    @extend_schema(responses={200: {"type": "object"}})
+    @action(detail=False, methods=["get"], url_path="stats")
+    def stats(self, request: Request) -> Response:
+        """Aggregate tenant/user RLHF operational metrics routed via the read replica."""
+        now = timezone.now()
+        organization = getattr(request, "organization", None)
+
+        with use_read_replica() as query_target:
+            scoped = Task.objects.filter(is_active=True)
+            if organization is not None:
+                scoped = scoped.filter(organization=organization)
+            else:
+                scoped = scoped.filter(user=request.user)
+
+            agg = scoped.aggregate(
+                total_tasks=Count("id"),
+                pending=Count("id", filter=Q(status="pending")),
+                in_progress=Count("id", filter=Q(status="in_progress")),
+                completed=Count("id", filter=Q(status="completed")),
+                archived=Count("id", filter=Q(status="archived")),
+                low=Count("id", filter=Q(priority="low")),
+                medium=Count("id", filter=Q(priority="medium")),
+                high=Count("id", filter=Q(priority="high")),
+                critical=Count("id", filter=Q(priority="critical")),
+                consensus_finalized=Count("id", filter=~Q(consensus_choice="")),
+                active_leases=Count("id", filter=Q(claimed_until__gt=now)),
+            )
+
+            ann_qs = TaskAnnotation.objects.filter(task__is_active=True)
+            if organization is not None:
+                ann_qs = ann_qs.filter(task__organization=organization)
+            else:
+                ann_qs = ann_qs.filter(task__user=request.user)
+            total_annotations = ann_qs.count()
+
+        payload = {
+            "total_tasks": int(agg["total_tasks"] or 0),
+            "by_status": {
+                "pending": int(agg["pending"] or 0),
+                "in_progress": int(agg["in_progress"] or 0),
+                "completed": int(agg["completed"] or 0),
+                "archived": int(agg["archived"] or 0),
+            },
+            "by_priority": {
+                "low": int(agg["low"] or 0),
+                "medium": int(agg["medium"] or 0),
+                "high": int(agg["high"] or 0),
+                "critical": int(agg["critical"] or 0),
+            },
+            "consensus_finalized": int(agg["consensus_finalized"] or 0),
+            "active_leases": int(agg["active_leases"] or 0),
+            "total_annotations": int(total_annotations),
+            "query_target": query_target,
+        }
+        return Response(payload, headers={"X-Query-Target": query_target})
+
     @action(
         detail=False,
         methods=["get"],
@@ -586,15 +645,30 @@ class TaskViewSet(viewsets.ModelViewSet):
         )
 
         if fmt == "json":
-            return Response([_serialize_export_row(t) for t in qs])
+            with use_read_replica() as query_target:
+                rows = [_serialize_export_row(t) for t in qs]
+            return Response(rows, headers={"X-Query-Target": query_target})
+
+        captured_scope = get_effective_rls_scope()
+        with use_read_replica() as query_target:
+            resolved_target = query_target
 
         def _jsonl_stream() -> Iterator[bytes]:
-            for task_obj in qs:
-                line = json.dumps(_serialize_export_row(task_obj), ensure_ascii=False) + "\n"
-                yield line.encode("utf-8")
+            with rls_context(
+                organization_id=captured_scope.organization_id or None,
+                user_id=captured_scope.user_id or None,
+                enforced=captured_scope.enforced,
+            ):
+                with use_read_replica():
+                    for task_obj in qs:
+                        line = (
+                            json.dumps(_serialize_export_row(task_obj), ensure_ascii=False) + "\n"
+                        )
+                        yield line.encode("utf-8")
 
         response = StreamingHttpResponse(_jsonl_stream(), content_type="application/x-ndjson")
         response["Content-Disposition"] = 'attachment; filename="rlhf-tasks-export.jsonl"'
+        response["X-Query-Target"] = resolved_target
         return response
 
     def _schedule_post_create_hooks(self, instance: Task) -> None:

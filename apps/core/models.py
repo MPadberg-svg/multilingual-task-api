@@ -35,6 +35,10 @@ VALID_WEBHOOK_EVENTS: frozenset[str] = frozenset(
         "task.consensus_reached",
         "task.translated",
         "webhook.ping",
+        "ai.budget_threshold_reached",
+        "ai.budget_exceeded",
+        "scim.user_provisioned",
+        "scim.user_deprovisioned",
     }
 )
 
@@ -133,6 +137,9 @@ class Organization(models.Model):  # type: ignore[django-manager-missing]
     max_users = models.PositiveIntegerField(default=5)
     max_tasks = models.PositiveIntegerField(default=100)
     max_ai_requests = models.PositiveIntegerField(default=50)
+    monthly_ai_token_budget = models.PositiveBigIntegerField(default=0)
+    monthly_ai_cost_budget_microusd = models.PositiveBigIntegerField(default=0)
+    ai_budget_alert_threshold_pct = models.PositiveSmallIntegerField(default=80)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -171,6 +178,8 @@ class OrganizationMember(models.Model):
         default="viewer",
     )
     is_billing_contact = models.BooleanField(default=False)
+    scim_external_id = models.CharField(max_length=255, blank=True, default="")
+    provisioned_by_scim = models.BooleanField(default=False)
     joined_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -378,6 +387,20 @@ class AuditLog(models.Model):
             ("api_key_revoked", "API Key Revoked"),
             ("webhook_created", "Webhook Created"),
             ("webhook_deleted", "Webhook Deleted"),
+            ("webhook_recovered", "Webhook Recovered"),
+            ("webhook_replayed", "Webhook Replayed"),
+            ("outbox_replayed", "Outbox Replayed"),
+            ("sso_updated", "SSO Configuration Updated"),
+            ("sso_login", "OIDC SSO Login"),
+            ("scim_token_rotated", "SCIM Bearer Token Rotated"),
+            ("scim_user_provisioned", "SCIM User Provisioned"),
+            ("scim_user_updated", "SCIM User Updated"),
+            ("scim_user_deprovisioned", "SCIM User Deprovisioned"),
+            ("finops_budget_updated", "FinOps AI Budget Updated"),
+            ("task_claimed", "Task Claimed"),
+            ("task_annotated", "Task Annotated"),
+            ("task_adjudicated", "Task Adjudicated"),
+            ("exported", "Dataset Exported"),
         ],
     )
     resource_type = models.CharField(max_length=50)
@@ -455,3 +478,104 @@ class OutboxEvent(models.Model):
 
     def __str__(self) -> str:
         return f"OutboxEvent({self.topic}:{self.event_type} [{self.status}])"
+
+
+class OrganizationSSOConfig(models.Model):
+    """Per-organization OIDC token-exchange and RFC 7644 SCIM 2.0 configuration."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.OneToOneField(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="sso_config",
+    )
+    enabled = models.BooleanField(default=False)
+    oidc_issuer = models.CharField(max_length=500, blank=True, default="")
+    oidc_client_id = models.CharField(max_length=255, blank=True, default="")
+    jwks_json = models.JSONField(default=dict, blank=True)
+    public_key_pem = models.TextField(blank=True, default="")
+    allowed_domains = models.JSONField(default=list, blank=True)
+    role_claim = models.CharField(max_length=100, default="groups")
+    role_mapping = models.JSONField(default=dict, blank=True)
+    default_role = models.CharField(
+        max_length=20,
+        choices=[
+            ("viewer", "Viewer"),
+            ("contributor", "Contributor"),
+            ("admin", "Admin"),
+        ],
+        default="viewer",
+    )
+    jit_provisioning = models.BooleanField(default=True)
+    scim_enabled = models.BooleanField(default=False)
+    scim_token_prefix = models.CharField(max_length=24, blank=True, default="")
+    scim_token_hash = models.CharField(max_length=64, blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @staticmethod
+    def hash_scim_token(raw_token: str) -> str:
+        """Compute deterministic SHA-256 hex digest for a SCIM bearer token."""
+        return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+    def rotate_scim_token(self) -> str:
+        """Generate a new SCIM 2.0 bearer token and persist only its prefix and SHA-256 digest."""
+        token_id = secrets.token_hex(4)
+        secret_part = secrets.token_urlsafe(32)
+        prefix = f"scim_live_{token_id}"
+        raw_token = f"{prefix}_{secret_part}"
+        self.scim_token_prefix = prefix
+        self.scim_token_hash = self.hash_scim_token(raw_token)
+        self.scim_enabled = True
+        self.save(
+            update_fields=[
+                "scim_token_prefix",
+                "scim_token_hash",
+                "scim_enabled",
+                "updated_at",
+            ]
+        )
+        return raw_token
+
+    def __str__(self) -> str:
+        return f"SSOConfig({self.organization_id} enabled={self.enabled} scim={self.scim_enabled})"
+
+
+class AIUsageLog(models.Model):
+    """Immutable FinOps ledger entry for per-tenant monthly OpenAI token and cost governance."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="ai_usage_logs",
+        null=True,
+        blank=True,
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="ai_usage_logs",
+    )
+    operation = models.CharField(max_length=50, default="chat.completions")
+    model_name = models.CharField(max_length=64, default="gpt-4o-mini")
+    prompt_tokens = models.PositiveIntegerField(default=0)
+    completion_tokens = models.PositiveIntegerField(default=0)
+    total_tokens = models.PositiveIntegerField(default=0)
+    cost_nanousd = models.PositiveBigIntegerField(default=0)
+    billing_period = models.CharField(max_length=7, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(
+                fields=["organization", "billing_period", "-created_at"],
+                name="core_aiusage_org_period_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"AIUsageLog({self.organization_id} {self.billing_period} {self.total_tokens} tok)"

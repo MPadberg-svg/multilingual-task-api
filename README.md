@@ -7,7 +7,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7.0-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?logo=openai&logoColor=white)](https://openai.com/)
-[![Version](https://img.shields.io/badge/release-v1.6.0-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
+[![Version](https://img.shields.io/badge/release-v1.7.0-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
 [![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](https://codecov.io)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![AWS](https://img.shields.io/badge/AWS-ECS_Fargate-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/ecs/)
@@ -45,11 +45,11 @@ The Multilingual Task API solves the core infrastructure challenge of AI annotat
 **Key capabilities:**
 
 - **Multilingual RLHF Pipeline** — Atomic priority-based task leasing (`POST /api/v1/tasks/claim/`), structured preference & 1–5 rubric annotations (`POST /api/v1/tasks/{id}/annotations/`), Inter-Annotator Agreement consensus auto-completion, split-vote adjudication (`/adjudicate/`), batch ingestion (`/bulk/` up to 100 tasks), and streaming NDJSON export (`/export/?format=jsonl`)
-- **Self-Serve Multi-Tenancy & RBAC** — Full `/api/v1/organizations/` CRUD, member seat-limit enforcement (`max_users`), 4-tier RBAC (`viewer` → `contributor` → `admin` → `owner`), last-owner & privilege-escalation guards, and filterable `/audit-logs/`
+- **Self-Serve Multi-Tenancy, OIDC SSO & SCIM 2.0 Provisioning** — Full `/api/v1/organizations/` CRUD, member seat-limit enforcement (`max_users`), 4-tier RBAC (`viewer` → `contributor` → `admin` → `owner`), enterprise OIDC `RS256`/`ES256` JWKS ID-token exchange (`POST /api/v1/auth/sso/oidc/exchange/`), RFC 7643/7644 SCIM 2.0 user lifecycle provisioning (`/scim/v2/Users`), last-owner & privilege-escalation guards, and filterable `/audit-logs/`
 - **Enterprise M2M API Keys & Idempotency** — Prefix-indexed SHA-256 `OrganizationAPIKey` (`mlk_live_<prefix>_...`) with route scopes (`tasks:read`, `tasks:write`, `tasks:export`, `ai:write`) plus `Idempotency-Key` middleware (`24h` Redis replay, `409` in-flight lock, `422` payload-mismatch protection)
 - **SSRF-Hardened Signed Webhooks & Transactional Outbox** — Outbound `WebhookEndpoint` delivery persisted atomically inside PostgreSQL via `OutboxEvent` (`SELECT ... FOR UPDATE SKIP LOCKED` Celery relay + 15s Beat sweep, dead-letter admin replay `/outbox/{id}/replay/`, bounded-chunk retention pruning, W3C `traceparent` continuity), self-serve circuit recovery (`/webhooks/{id}/recover/`) & delivery replay (`/deliveries/{id}/replay/`), signed with `X-MLTask-Signature-256: sha256=<hmac>`, non-redirecting TLS transport, and SSRF protection
-- **PostgreSQL 16 Row-Level Security (RLS) & `pg_trgm` Search** — Storage-engine `ENABLE`/`FORCE ROW LEVEL SECURITY` policies (`tasks_task`, `core_organizationapikey`, `core_webhookendpoint`, `core_outboxevent`) paired with `PostgresRLSMiddleware` and `mltask_rls_app` (`NOSUPERUSER NOBYPASSRLS`), plus `pg_trgm` GIN trigram indexes (`tasks_trans_title_trgm_idx`, `tasks_trans_desc_trgm_idx`) accelerating multilingual `?search=` `EXISTS (... ILIKE ...)` semi-joins and plan-tiered per-organization sliding-window rate limits (`X-RateLimit-*`)
-- **Async Auto-Translation & FinOps Telemetry** — `auto_translate=true` on task creation dispatches background OpenAI EN/ES/FR translation + live WebSocket notification while tracking per-tenant `prompt_tokens`, `completion_tokens`, and estimated USD spend in `/usage/` and Prometheus `/api/v1/metrics/`
+- **PostgreSQL 16 Row-Level Security (RLS), Read-Replica Routing & `pg_trgm` Search** — Storage-engine `ENABLE`/`FORCE ROW LEVEL SECURITY` policies (`tasks_task`, `core_organizationapikey`, `core_webhookendpoint`, `core_outboxevent`, `core_organizationssoconfig`, `core_aiusagelog`) paired with `PostgresRLSMiddleware` and `mltask_rls_app` (`NOSUPERUSER NOBYPASSRLS`), RLS-aware `ReplicaDatabaseRouter` steering `/tasks/stats/`, `/tasks/export/`, `/usage/`, and `/finops/` to `POSTGRES_REPLICA_HOST` (`X-Query-Target: replica`), plus `pg_trgm` GIN trigram indexes accelerating multilingual `?search=` `EXISTS (... ILIKE ...)` semi-joins and plan-tiered per-organization sliding-window rate limits (`X-RateLimit-*`)
+- **Async Auto-Translation & Monthly AI FinOps Budget Governance** — `auto_translate=true` on task creation dispatches background OpenAI EN/ES/FR translation + live WebSocket notification while enforcing per-tenant monthly token & USD spend ceilings (`AIUsageLog` SQL ledger + Redis rollups, `/finops/`, `429 ai_budget_exceeded` cutoff, and deduplicated `ai.budget_threshold_reached` / `ai.budget_exceeded` outbox alerts) alongside Prometheus `/api/v1/metrics/`
 - **1M+ Scale Keyset Cursor Pagination & W3C/OTLP Tracing** — Adaptive `$O(1)$` composite keyset cursor pagination (`?pagination=cursor`, ordered by `(-created_at, -id)`) alongside standard offset pagination, plus zero-dependency W3C `traceparent` & OpenTelemetry OTLP/HTTP JSON span export correlating HTTP requests, Celery workers, OpenAI spans, and outbound webhooks
 - **Mounted CSP-Nonce Live Console** — Interactive `/explorer/` operations UI protected by per-request cryptographic CSP nonces (`'nonce-...'`, zero `'unsafe-inline'`) with live `/ws/tasks/` WebSocket streaming
 
@@ -318,8 +318,9 @@ http://localhost:8000/api/v1/
 | `/api/v1/auth/token/verify/` | POST | Verify token validity |
 | `/api/v1/auth/me/` | GET, PATCH | Inspect or update caller profile + active organization memberships |
 | `/api/v1/auth/logout/` | POST | Blacklist caller-owned refresh token + persist `AuditLog` |
+| `/api/v1/auth/sso/oidc/exchange/` | POST | Verify enterprise IdP `RS256`/`ES256` OIDC `id_token`, JIT-provision member, and mint SimpleJWT |
 
-#### Multi-Tenant Organizations, RBAC, M2M API Keys & Webhooks
+#### Multi-Tenant Organizations, RBAC, SSO/SCIM, FinOps, M2M API Keys & Webhooks
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -327,13 +328,23 @@ http://localhost:8000/api/v1/
 | `/api/v1/organizations/{org_id}/` | GET, PATCH | Retrieve or update organization settings (`admin`/`owner`) |
 | `/api/v1/organizations/{org_id}/members/` | GET, POST | List members or invite user enforcing `max_users` seat quota |
 | `/api/v1/organizations/{org_id}/members/{member_id}/` | PATCH, DELETE | Update role or remove member (protects last `owner`) |
+| `/api/v1/organizations/{org_id}/sso/` | GET, PATCH | Inspect or update OIDC JWKS/PEM, allowed email domains, and group-to-role mapping (`admin`/`owner`) |
+| `/api/v1/organizations/{org_id}/sso/scim-token/` | POST | Rotate SHA-256-hashed RFC 7644 SCIM 2.0 Bearer credential (`scim_live_...`) |
+| `/api/v1/organizations/{org_id}/scim/v2/Users` | GET, POST | RFC 7643/7644 SCIM 2.0 directory listing (`filter=userName eq "..."`) & user provisioning |
+| `/api/v1/organizations/{org_id}/scim/v2/Users/{member_id}` | GET, PUT, PATCH, DELETE | RFC 7644 SCIM `PatchOp` role/profile sync & `active=false` multi-tenant-safe offboarding |
 | `/api/v1/organizations/{org_id}/audit-logs/` | GET | Paginated, filterable immutable security audit trail |
-| `/api/v1/organizations/{org_id}/usage/` | GET | Real-time plan quotas + cumulative OpenAI token & USD FinOps telemetry |
+| `/api/v1/organizations/{org_id}/usage/` | GET | Real-time plan quotas + cumulative OpenAI token & USD telemetry (read-replica routed) |
+| `/api/v1/organizations/{org_id}/finops/` | GET, PATCH | Monthly AI token/USD ceilings, per-operation `AIUsageLog` rollups (`X-Query-Target`), and alert thresholds |
 | `/api/v1/organizations/{org_id}/api-keys/` | GET, POST | List or mint SHA-256 scoped M2M API keys (`mlk_live_<prefix>_...`) |
 | `/api/v1/organizations/{org_id}/api-keys/{key_id}/` | DELETE | Immediately revoke an M2M API key |
 | `/api/v1/organizations/{org_id}/webhooks/` | GET, POST | List or register SSRF-validated outbound HMAC webhook endpoints |
 | `/api/v1/organizations/{org_id}/webhooks/{webhook_id}/` | DELETE | Delete a webhook endpoint |
 | `/api/v1/organizations/{org_id}/webhooks/{webhook_id}/test/` | POST | Send signed `webhook.ping` event and inspect delivery receipt |
+| `/api/v1/organizations/{org_id}/webhooks/{webhook_id}/recover/` | POST | Reset webhook failure circuit counter and re-activate endpoint |
+| `/api/v1/organizations/{org_id}/webhooks/{webhook_id}/deliveries/` | GET | Paginated webhook delivery audit history |
+| `/api/v1/organizations/{org_id}/webhooks/{webhook_id}/deliveries/{delivery_id}/replay/` | POST | Re-sign and replay a historical webhook delivery |
+| `/api/v1/organizations/{org_id}/outbox/` | GET | Paginated Transactional Outbox event inspector (`status`, `topic`) |
+| `/api/v1/organizations/{org_id}/outbox/{event_id}/replay/` | POST | Re-arm a `failed` dead-letter outbox event for immediate relay |
 
 #### Multilingual Tasks & RLHF Annotation Pipeline
 
@@ -341,9 +352,10 @@ http://localhost:8000/api/v1/
 |----------|--------|-------------|
 | `/api/v1/tasks/` | GET | List tasks (cached 5min, language- & query-scoped; filter by `status`, `priority`, `search`) |
 | `/api/v1/tasks/` | POST | Create task (`auto_translate=true` queues async OpenAI EN/ES/FR translation) |
+| `/api/v1/tasks/stats/` | GET | Tenant/user RLHF operational metrics (status, priority, consensus, active leases) via read replica |
 | `/api/v1/tasks/bulk/` | POST | Atomic batch creation (up to 100 tasks, enforcing `Organization.max_tasks`) |
 | `/api/v1/tasks/claim/` | POST | Atomically lease highest-priority unannotated task (`FOR UPDATE SKIP LOCKED`) |
-| `/api/v1/tasks/export/?format=jsonl` | GET | Stream RLHF dataset (translations, rubric scores, consensus) as NDJSON |
+| `/api/v1/tasks/export/?format=jsonl` | GET | Stream RLHF dataset (translations, rubric scores, consensus) as NDJSON via read replica |
 | `/api/v1/tasks/{id}/` | GET, PATCH, DELETE | Retrieve (cached 10min), update, or soft-delete (`is_active=False`) |
 | `/api/v1/tasks/{id}/restore/` | POST | Restore a soft-deleted task (`admin`/`owner`) |
 | `/api/v1/tasks/{id}/annotations/` | GET, POST | List or submit structured RLHF preference + 1–5 rubric scores & trigger IAA consensus |

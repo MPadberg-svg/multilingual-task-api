@@ -15,8 +15,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
+from django.conf import settings
 from django.db import connections
 from django.http import HttpRequest, HttpResponse
+from django.utils.connection import ConnectionDoesNotExist
 
 _TRANSACTION_STATUS_INERROR = 3
 
@@ -162,6 +164,23 @@ def _install_wrapper_once(conn: Any) -> Iterator[None]:
             _sync_postgres_gucs(conn, get_effective_rls_scope().as_guc_tuple())
 
 
+def _iter_managed_connections(using: str = "default") -> list[Any]:
+    """Return primary (and configured read-replica when ``using == 'default'``) connections."""
+    conns = [connections[using]]
+    databases = getattr(settings, "DATABASES", {})
+    if (
+        using == "default"
+        and isinstance(databases, dict)
+        and "replica" in databases
+        and "replica" in connections.databases
+    ):
+        try:
+            conns.append(connections["replica"])
+        except ConnectionDoesNotExist:
+            pass
+    return conns
+
+
 @contextmanager
 def rls_context(
     *,
@@ -177,11 +196,14 @@ def rls_context(
         user_id=str(user_id) if user_id else "",
         bypass=False,
     )
-    conn = connections[using]
-    with _install_wrapper_once(conn):
+    target_conns = _iter_managed_connections(using)
+    with ExitStack() as stack:
+        for conn in target_conns:
+            stack.enter_context(_install_wrapper_once(conn))
         token = _EXPLICIT_RLS_SCOPE.set(scope)
         try:
-            _sync_postgres_gucs(conn, scope.as_guc_tuple())
+            for conn in target_conns:
+                _sync_postgres_gucs(conn, scope.as_guc_tuple())
             yield scope
         finally:
             _EXPLICIT_RLS_SCOPE.reset(token)
@@ -191,11 +213,14 @@ def rls_context(
 def rls_bypass(*, using: str = "default") -> Iterator[RLSScope]:
     """Explicitly bypass PostgreSQL RLS policies for trusted system/relay operations."""
     scope = RLSScope(enforced=False, organization_id="", user_id="", bypass=True)
-    conn = connections[using]
-    with _install_wrapper_once(conn):
+    target_conns = _iter_managed_connections(using)
+    with ExitStack() as stack:
+        for conn in target_conns:
+            stack.enter_context(_install_wrapper_once(conn))
         token = _EXPLICIT_RLS_SCOPE.set(scope)
         try:
-            _sync_postgres_gucs(conn, scope.as_guc_tuple())
+            for conn in target_conns:
+                _sync_postgres_gucs(conn, scope.as_guc_tuple())
             yield scope
         finally:
             _EXPLICIT_RLS_SCOPE.reset(token)
@@ -211,7 +236,8 @@ class PostgresRLSMiddleware:
         req_token = _ACTIVE_HTTP_REQUEST.set(request)
         try:
             with ExitStack() as stack:
-                stack.enter_context(_install_wrapper_once(connections["default"]))
+                for conn in _iter_managed_connections("default"):
+                    stack.enter_context(_install_wrapper_once(conn))
                 return self.get_response(request)
         finally:
             _ACTIVE_HTTP_REQUEST.reset(req_token)

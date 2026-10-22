@@ -26,6 +26,7 @@ from rest_framework.response import Response
 
 from apps.ai_assist.circuit_breaker import CircuitOpenError, openai_circuit_breaker
 from apps.ai_assist.services import _ai_service
+from apps.core.finops import AIBudgetExceededError
 from apps.core.throttling import AIAssistRateThrottle, BurstRateThrottle
 
 logger = logging.getLogger(__name__)
@@ -56,6 +57,17 @@ def _resolve_lang_param(request: Request) -> str:
 def _resolve_org_id(request: Request) -> str | None:
     org = getattr(request, "organization", None)
     return str(org.id) if org is not None else None
+
+
+def _budget_exceeded_response(exc: AIBudgetExceededError) -> Response:
+    return Response(
+        {
+            "error": str(exc),
+            "code": "ai_budget_exceeded",
+            "budget": exc.budget_snapshot,
+        },
+        status=429,
+    )
 
 
 def _circuit_open_response() -> Response:
@@ -119,6 +131,8 @@ def suggest_task(request: Request) -> Response:
     except ValueError as exc:
         logger.warning("Input validation rejected on suggest_task: %s", exc)
         return Response({"error": str(exc)}, status=400)
+    except AIBudgetExceededError as exc:
+        return _budget_exceeded_response(exc)
     except CircuitOpenError:
         return _circuit_open_response()
     except Exception as exc:
@@ -178,6 +192,8 @@ def evaluate_quality(request: Request) -> Response:
     except ValueError as exc:
         logger.warning("Input validation rejected on evaluate_quality: %s", exc)
         return Response({"error": str(exc)}, status=400)
+    except AIBudgetExceededError as exc:
+        return _budget_exceeded_response(exc)
     except CircuitOpenError:
         return _circuit_open_response()
     except Exception as exc:
@@ -238,6 +254,8 @@ def generate_test_cases(request: Request) -> Response:
     except ValueError as exc:
         logger.warning("Input validation rejected on generate_test_cases: %s", exc)
         return Response({"error": str(exc)}, status=400)
+    except AIBudgetExceededError as exc:
+        return _budget_exceeded_response(exc)
     except CircuitOpenError:
         return _circuit_open_response()
     except Exception as exc:
