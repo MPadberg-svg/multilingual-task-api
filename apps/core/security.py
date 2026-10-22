@@ -1,7 +1,8 @@
 """Security utilities for input validation and sanitization.
 
 Provides ``InputValidator`` with pattern-based detection for SQL injection,
-script injection, and dangerous code execution, plus HTML escaping.
+script injection, and dangerous code execution, plus Unicode-preserving
+text sanitization and HTML escaping.
 
 Example:
     >>> from apps.core.security import InputValidator
@@ -9,9 +10,12 @@ Example:
     ValueError: Security violation: ...
 """
 
+from __future__ import annotations
+
 import html
 import logging
 import re
+import unicodedata
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +33,7 @@ class InputValidator:
     # Patterns target structural SQLi markers, not lone English words like
     # "select" or "update" that appear in normal user prose. All DB access in
     # this project goes through the ORM with parameterised binding, so this
-    # is defense-in-depth for LLM-bound input — not the primary control.
+    # is defense-in-depth for LLM-bound and stored input.
     SQL_INJECTION_PATTERNS = [
         r"\bUNION\s+(ALL\s+)?SELECT\b",
         r"\bDROP\s+(TABLE|DATABASE|SCHEMA)\b",
@@ -88,18 +92,19 @@ class InputValidator:
 
     @staticmethod
     def sanitize_string(value: str, max_length: int = 10000) -> str:
-        """Strip dangerous characters and enforce length limits.
+        """Strip control/invisible characters while preserving full UTF-8 multilingual text.
 
-        Unlike ``sanitize_html``, this does NOT escape HTML entities.
-        It removes null bytes, control characters, and enforces length.
-        Use this for plain text inputs before sending to LLMs.
+        Normalizes line endings, NFC-normalizes Unicode, removes null bytes and
+        Unicode control/surrogate characters (category ``C*`` except ``\\n`` and
+        ``\\t``), and enforces length limits. Preserves French ligatures (``œ``),
+        currency symbols (``€``), CJK, Arabic, Cyrillic, and accented scripts.
 
         Args:
             value: Raw input string.
             max_length: Maximum permitted length (default 10 000).
 
         Returns:
-            Cleaned string.
+            Cleaned UTF-8 string.
 
         Raises:
             ValueError: If ``value`` exceeds ``max_length``.
@@ -108,28 +113,18 @@ class InputValidator:
             value = str(value)
         if len(value) > max_length:
             raise ValueError(f"Input exceeds maximum length of {max_length}")
-        # Remove null bytes and most control characters (keep tab, newline, space)
+
+        normalized = unicodedata.normalize("NFC", value.replace("\r\n", "\n").replace("\r", "\n"))
         cleaned = "".join(
             ch
-            for ch in value
-            if ch == "\n"
-            or ch == "\t"
-            or (ch >= " " and ch <= "~")
-            or ch
-            in "¡¢£¤¥¦§¨©ª«¬­®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ"
+            for ch in normalized
+            if ch in ("\n", "\t") or not unicodedata.category(ch).startswith("C")
         )
         return cleaned.strip()
 
     @classmethod
     def detect_sqli(cls, value: str) -> tuple[bool, str]:
-        """Scan input for SQL injection patterns.
-
-        Args:
-            value: Raw input string.
-
-        Returns:
-            Tuple of ``(is_dangerous, reason)``.
-        """
+        """Scan input for SQL injection patterns."""
         for pattern in cls.SQL_INJECTION_PATTERNS:
             if re.search(pattern, value, re.IGNORECASE):
                 return True, f"SQL injection pattern detected: {pattern}"
@@ -137,14 +132,7 @@ class InputValidator:
 
     @classmethod
     def detect_xss(cls, value: str) -> tuple[bool, str]:
-        """Scan input for script injection/XSS patterns.
-
-        Args:
-            value: Raw input string.
-
-        Returns:
-            Tuple of ``(is_dangerous, reason)``.
-        """
+        """Scan input for script injection/XSS patterns."""
         for pattern in cls.SCRIPT_PATTERNS:
             if re.search(pattern, value, re.IGNORECASE | re.DOTALL):
                 return True, f"XSS pattern detected: {pattern}"
@@ -152,14 +140,7 @@ class InputValidator:
 
     @classmethod
     def detect_injection(cls, value: str) -> tuple[bool, str]:
-        """Scan input for SQLi or script-injection patterns.
-
-        Args:
-            value: Raw input string.
-
-        Returns:
-            Tuple of ``(is_dangerous, reason)``.
-        """
+        """Scan input for SQLi or script-injection patterns."""
         is_sqli, reason = cls.detect_sqli(value)
         if is_sqli:
             return True, reason
@@ -172,14 +153,7 @@ class InputValidator:
 
     @classmethod
     def validate_code_input(cls, code: str) -> tuple[bool, str]:
-        """Scan code string for dangerous execution patterns.
-
-        Args:
-            code: Raw code string.
-
-        Returns:
-            Tuple of ``(is_dangerous, reason)``.
-        """
+        """Scan code string for dangerous execution patterns."""
         for pattern in cls.DANGEROUS_CODE_PATTERNS:
             if re.search(pattern, code, re.IGNORECASE):
                 return True, f"Dangerous code pattern blocked: {pattern}"
@@ -187,18 +161,7 @@ class InputValidator:
 
     @classmethod
     def full_sanitize(cls, value: str, max_length: int = 10000) -> str:
-        """Combined validation: detect injection then HTML-escape.
-
-        Args:
-            value: Raw input string.
-            max_length: Maximum permitted length.
-
-        Returns:
-            Sanitized, HTML-escaped string.
-
-        Raises:
-            ValueError: If injection detected or length exceeded.
-        """
+        """Combined validation: detect injection then HTML-escape."""
         is_dangerous, reason = cls.detect_injection(value)
         if is_dangerous:
             raise ValueError(f"Security violation: {reason}")

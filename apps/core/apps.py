@@ -1,5 +1,7 @@
 """App configuration for the core platform application."""
 
+from __future__ import annotations
+
 from django.apps import AppConfig
 
 
@@ -10,7 +12,7 @@ class CoreConfig(AppConfig):
     name = "apps.core"
     verbose_name = "Core Platform"
 
-    def ready(self):
+    def ready(self) -> None:
         """Trigger Celery task discovery when Django apps are fully loaded."""
         from config.celery import discover_tasks
 
