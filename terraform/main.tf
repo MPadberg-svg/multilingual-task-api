@@ -222,7 +222,7 @@ resource "aws_lb_listener" "http" {
   }
 
   dynamic "default_action" {
-    for_each = var.acm_certificate_arn == "" && var.origin_verify_secret == "" ? [1] : []
+    for_each = var.acm_certificate_arn == "" && !local.enable_origin_cloaking ? [1] : []
     content {
       type             = "forward"
       target_group_arn = aws_lb_target_group.api.arn
@@ -230,7 +230,7 @@ resource "aws_lb_listener" "http" {
   }
 
   dynamic "default_action" {
-    for_each = var.acm_certificate_arn == "" && var.origin_verify_secret != "" ? [1] : []
+    for_each = var.acm_certificate_arn == "" && local.enable_origin_cloaking ? [1] : []
     content {
       type = "fixed-response"
       fixed_response {
@@ -251,7 +251,7 @@ resource "aws_lb_listener" "https" {
   certificate_arn   = var.acm_certificate_arn
 
   dynamic "default_action" {
-    for_each = var.origin_verify_secret == "" ? [1] : []
+    for_each = !local.enable_origin_cloaking ? [1] : []
     content {
       type             = "forward"
       target_group_arn = aws_lb_target_group.api.arn
@@ -259,7 +259,7 @@ resource "aws_lb_listener" "https" {
   }
 
   dynamic "default_action" {
-    for_each = var.origin_verify_secret != "" ? [1] : []
+    for_each = local.enable_origin_cloaking ? [1] : []
     content {
       type = "fixed-response"
       fixed_response {
@@ -272,7 +272,7 @@ resource "aws_lb_listener" "https" {
 }
 
 resource "aws_lb_listener_rule" "http_origin_verify" {
-  count        = var.acm_certificate_arn == "" && var.origin_verify_secret != "" ? 1 : 0
+  count        = var.acm_certificate_arn == "" && local.enable_origin_cloaking ? 1 : 0
   listener_arn = aws_lb_listener.http.arn
   priority     = 1
 
@@ -290,7 +290,7 @@ resource "aws_lb_listener_rule" "http_origin_verify" {
 }
 
 resource "aws_lb_listener_rule" "https_origin_verify" {
-  count        = var.acm_certificate_arn != "" && var.origin_verify_secret != "" ? 1 : 0
+  count        = var.acm_certificate_arn != "" && local.enable_origin_cloaking ? 1 : 0
   listener_arn = aws_lb_listener.https[0].arn
   priority     = 1
 
@@ -350,8 +350,9 @@ resource "aws_cloudwatch_log_group" "api" {
 }
 
 locals {
-  redis_tls_base_url = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
-  github_oidc_arn    = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
+  enable_origin_cloaking = nonsensitive(var.origin_verify_secret != "")
+  redis_tls_base_url     = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+  github_oidc_arn        = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
   secret_arns = compact([
     var.django_secret_key_arn,
     var.db_password_secret_arn,
@@ -822,7 +823,7 @@ resource "aws_cloudfront_distribution" "cdn" {
     origin_id   = "ALB"
 
     dynamic "custom_header" {
-      for_each = var.origin_verify_secret != "" ? [1] : []
+      for_each = local.enable_origin_cloaking ? [1] : []
       content {
         name  = "X-Origin-Verify"
         value = var.origin_verify_secret
