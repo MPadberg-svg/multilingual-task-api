@@ -166,7 +166,7 @@ class TaskViewSet(viewsets.ModelViewSet):
             .select_related("user", "organization")
             .prefetch_related("translations")
             .annotate(annotation_count_val=Count("annotations", distinct=True))
-            .order_by("-created_at")
+            .order_by("-created_at", "-id")
         )
         organization = getattr(self.request, "organization", None)
         if organization is not None:
