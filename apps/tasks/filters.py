@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
-from django.conf import settings
-from django.db.models import Q, QuerySet
+from typing import Any
+
+from django.db.models import Exists, Field, OuterRef, Q, QuerySet
+from django.db.models.lookups import IContains
 
 from django_filters import rest_framework as filters
 
 from apps.tasks.models import Task
+
+
+@Field.register_lookup
+class TrigramILike(IContains):
+    """Case-insensitive substring lookup compiling to native PostgreSQL ``ILIKE`` (``pg_trgm``)."""
+
+    lookup_name = "trgm_ilike"
+
+    def as_postgresql(
+        self,
+        compiler: Any,
+        connection: Any,
+    ) -> tuple[str, list[Any]]:
+        lhs, lhs_params = self.process_lhs(compiler, connection)
+        rhs, rhs_params = self.process_rhs(compiler, connection)
+        return f"{lhs} ILIKE {rhs}", [*lhs_params, *rhs_params]
+
+    def get_rhs_op(self, connection: Any, rhs: str) -> str:
+        return str(connection.operators["icontains"] % rhs)
 
 
 class TaskFilter(filters.FilterSet):
@@ -55,21 +76,14 @@ class TaskFilter(filters.FilterSet):
         name: str,
         value: str,
     ) -> QuerySet[Task]:
-        """Filter tasks by searching across all language translations with deduplication."""
+        """Filter tasks across translations via an ``EXISTS`` ``pg_trgm`` semi-join."""
         cleaned = (value or "").strip()
         if not cleaned:
             return queryset
 
-        q_objects = Q()
-        languages = getattr(settings, "LANGUAGES", [("en", "English")])
+        translation_model = Task._parler_meta.root_model
+        matching_translations = translation_model.objects.filter(
+            master_id=OuterRef("pk"),
+        ).filter(Q(title__trgm_ilike=cleaned) | Q(description__trgm_ilike=cleaned))
 
-        for lang_code, _lang_name in languages:
-            q_objects |= Q(
-                translations__language_code=lang_code,
-                translations__title__icontains=cleaned,
-            ) | Q(
-                translations__language_code=lang_code,
-                translations__description__icontains=cleaned,
-            )
-
-        return queryset.filter(q_objects).distinct()
+        return queryset.filter(Exists(matching_translations))

@@ -36,9 +36,14 @@ from apps.core.tenant_views import (
     OrganizationListCreateView,
     OrganizationMemberDetailView,
     OrganizationMemberListCreateView,
+    OrganizationOutboxListView,
+    OrganizationOutboxReplayView,
     OrganizationUsageView,
+    OrganizationWebhookDeliveryListView,
+    OrganizationWebhookDeliveryReplayView,
     OrganizationWebhookDetailView,
     OrganizationWebhookListCreateView,
+    OrganizationWebhookRecoverView,
     OrganizationWebhookTestView,
 )
 
@@ -118,6 +123,31 @@ urlpatterns = [
         "api/v1/organizations/<uuid:org_id>/webhooks/<uuid:webhook_id>/test/",
         OrganizationWebhookTestView.as_view(),
         name="organization-webhook-test",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/webhooks/<uuid:webhook_id>/recover/",
+        OrganizationWebhookRecoverView.as_view(),
+        name="organization-webhook-recover",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/webhooks/<uuid:webhook_id>/deliveries/",
+        OrganizationWebhookDeliveryListView.as_view(),
+        name="organization-webhook-deliveries",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/webhooks/<uuid:webhook_id>/deliveries/<uuid:delivery_id>/replay/",
+        OrganizationWebhookDeliveryReplayView.as_view(),
+        name="organization-webhook-delivery-replay",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/outbox/",
+        OrganizationOutboxListView.as_view(),
+        name="organization-outbox-list",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/outbox/<uuid:event_id>/replay/",
+        OrganizationOutboxReplayView.as_view(),
+        name="organization-outbox-replay",
     ),
     # Interactive CSP-nonce-hardened API & WebSocket Operations Console
     path("explorer/", ExplorerConsoleView.as_view(), name="api-explorer"),

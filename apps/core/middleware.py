@@ -375,7 +375,13 @@ class TenantMiddleware(MiddlewareMixin):
         return None
 
     def process_response(self, request: HttpRequest, response: HttpResponse) -> HttpResponse:
-        """Pass response through unchanged."""
+        """Attach per-organization plan rate-limit headers when tenant throttling ran."""
+        rl_meta = getattr(request, "_org_ratelimit_meta", None)
+        if isinstance(rl_meta, dict):
+            response["X-RateLimit-Limit"] = str(rl_meta["limit"])
+            response["X-RateLimit-Remaining"] = str(rl_meta["remaining"])
+            response["X-RateLimit-Reset"] = str(rl_meta["reset"])
+            response["X-RateLimit-Plan"] = str(rl_meta["plan"])
         return response
 
 

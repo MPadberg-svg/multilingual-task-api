@@ -162,6 +162,7 @@ REST_FRAMEWORK: dict[str, Any] = {
     "DEFAULT_THROTTLE_CLASSES": [
         "rest_framework.throttling.AnonRateThrottle",
         "rest_framework.throttling.UserRateThrottle",
+        "apps.core.throttling.OrganizationPlanRateThrottle",
     ],
     "DEFAULT_THROTTLE_RATES": {
         "anon": "100/day",
@@ -169,6 +170,10 @@ REST_FRAMEWORK: dict[str, Any] = {
         "health": "600/min",
         "ai_assist": "20/hour",
         "ai_assist_burst": "5/min",
+        "org_free": "60/min",
+        "org_starter": "300/min",
+        "org_professional": "1200/min",
+        "org_enterprise": "6000/min",
     },
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
     "DEFAULT_RENDERER_CLASSES": [
@@ -207,11 +212,11 @@ SPECTACULAR_SETTINGS: dict[str, Any] = {
     "DESCRIPTION": (
         "Production-grade multi-tenant REST & WebSocket API for multilingual RLHF task "
         "orchestration, atomic annotation leasing, inter-annotator consensus, OpenAI FinOps "
-        "telemetry, scoped M2M API keys, HMAC-signed webhooks, transactional outbox relay, "
-        "PostgreSQL Row-Level Security (RLS), keyset cursor pagination, "
-        "and W3C/OTLP distributed tracing."
+        "telemetry, scoped M2M API keys, HMAC-signed webhooks, transactional outbox relay "
+        "with dead-letter replay, PostgreSQL Row-Level Security (RLS), pg_trgm search, "
+        "plan-tiered rate limiting, keyset cursor pagination, and W3C/OTLP distributed tracing."
     ),
-    "VERSION": "1.5.0",
+    "VERSION": "1.6.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
 
@@ -285,11 +290,21 @@ CELERY_ENABLE_UTC: bool = True
 CELERY_TASK_TRACK_STARTED: bool = True
 CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP: bool = True
 
+OUTBOX_RETENTION_DAYS: int = config("OUTBOX_RETENTION_DAYS", default=14, cast=int)
+WEBHOOK_DELIVERY_RETENTION_DAYS: int = config(
+    "WEBHOOK_DELIVERY_RETENTION_DAYS", default=30, cast=int
+)
+
 CELERY_BEAT_SCHEDULE: dict[str, dict[str, Any]] = {
     "drain-transactional-outbox": {
         "task": "apps.tasks.tasks.drain_outbox_events",
         "schedule": 15.0,
         "kwargs": {"batch_size": 50},
+    },
+    "prune-outbox-and-webhook-history": {
+        "task": "apps.tasks.tasks.prune_telemetry_and_outbox_history",
+        "schedule": 86400.0,
+        "kwargs": {"chunk_size": 500},
     },
 }
 

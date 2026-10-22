@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.6.0] — 2026-10-22
+
+### Added
+- **Outbox Dead-Letter Admin Replay & Bounded-Chunk Retention Pruning (`apps/core/outbox.py`, `apps/core/tenant_views.py`, `apps/tasks/tasks.py`, `config/urls.py`)**:
+  - Added `GET /api/v1/organizations/{org_id}/outbox/` (filterable by `status` and `topic`) and `POST /api/v1/organizations/{org_id}/outbox/{event_id}/replay/` resetting `failed` dead-letter outbox events for immediate relay with immutable `AuditLog` tracking (`outbox_replayed`).
+  - Added `prune_outbox_and_webhook_history` / `prune_telemetry_and_outbox_history` (`OUTBOX_RETENTION_DAYS = 14`, `WEBHOOK_DELIVERY_RETENTION_DAYS = 30`) scheduled daily in `CELERY_BEAT_SCHEDULE`, deleting aged `dispatched` outbox rows and webhook delivery records in bounded primary-key batches while preserving all `pending`, `processing`, and `failed` rows.
+- **PostgreSQL 16 `pg_trgm` GIN Trigram Search Acceleration (`apps/tasks/filters.py`, `apps/tasks/migrations/0006_postgres_pg_trgm_search_indexes.py`)**:
+  - Installed PostgreSQL `pg_trgm` extension and GIN trigram indexes (`tasks_trans_title_trgm_idx`, `tasks_trans_desc_trgm_idx`) on `tasks_task_translation`.
+  - Refactored `TaskFilter.filter_search` to a parameterized `EXISTS` semi-join with custom `TrigramILike` (`ILIKE` on PostgreSQL, `LIKE ... ESCAPE` on SQLite), eliminating 32-column `SELECT DISTINCT` cartesian fan-out and enabling `Bitmap Index Scan` execution plans verified via `EXPLAIN (FORMAT JSON)` on live PostgreSQL 16.
+- **Plan-Tiered Organization Rate Limiting & Self-Serve Webhook Ops (`apps/core/throttling.py`, `apps/core/middleware.py`, `apps/core/tenant_views.py`)**:
+  - Added `OrganizationPlanRateThrottle` enforcing dynamic per-tenant sliding-window quotas mapped from `organization.plan` (`free` `60/min`, `starter` `300/min`, `professional` `1200/min`, `enterprise` `6000/min`) and emitting `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `X-RateLimit-Plan` headers.
+  - Added `POST .../webhooks/{id}/recover/`, `GET .../webhooks/{id}/deliveries/`, and `POST .../webhooks/{id}/deliveries/{delivery_id}/replay/` with fresh HMAC signing and `AuditLog` trails.
+
+---
+
 ## [1.5.0] — 2026-10-22
 
 ### Added

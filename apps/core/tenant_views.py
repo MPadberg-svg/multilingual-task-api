@@ -32,8 +32,11 @@ from apps.core.models import (
     Organization,
     OrganizationAPIKey,
     OrganizationMember,
+    OutboxEvent,
+    WebhookDelivery,
     WebhookEndpoint,
 )
+from apps.core.outbox import replay_dead_letter_outbox_event
 from apps.core.pagination import StandardResultsSetPagination
 from apps.core.serializers import (
     AuditLogSerializer,
@@ -44,6 +47,7 @@ from apps.core.serializers import (
     OrganizationMemberCreateSerializer,
     OrganizationMemberSerializer,
     OrganizationSerializer,
+    OutboxEventSerializer,
     WebhookDeliverySerializer,
     WebhookEndpointCreateSerializer,
     WebhookEndpointSerializer,
@@ -564,6 +568,159 @@ class OrganizationWebhookTestView(APIView):
             {"message": "Test ping from Multilingual Task API", "organization_id": str(org.id)},
         )
         return Response(WebhookDeliverySerializer(delivery).data, status=status.HTTP_200_OK)
+
+
+class OrganizationWebhookRecoverView(APIView):
+    """Reset consecutive failure counter and re-enable a circuit-broken webhook endpoint."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = WebhookEndpointSerializer
+
+    @transaction.atomic
+    def post(self, request: Request, org_id: str, webhook_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        endpoint = get_object_or_404(WebhookEndpoint, id=webhook_id, organization=org)
+        prev_failures = int(endpoint.failure_count)
+        prev_active = bool(endpoint.is_active)
+
+        endpoint.failure_count = 0
+        endpoint.is_active = True
+        endpoint.save(update_fields=["failure_count", "is_active"])
+
+        _record_audit(
+            request,
+            action="webhook_recovered",
+            resource_type="WebhookEndpoint",
+            resource_id=str(endpoint.id),
+            organization=org,
+            metadata={
+                "previous_failures": prev_failures,
+                "was_active": prev_active,
+            },
+        )
+        return Response(WebhookEndpointSerializer(endpoint).data, status=status.HTTP_200_OK)
+
+
+class OrganizationWebhookDeliveryListView(APIView):
+    """Paginated delivery history for a tenant webhook endpoint."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = WebhookDeliverySerializer
+
+    def get(self, request: Request, org_id: str, webhook_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        endpoint = get_object_or_404(WebhookEndpoint, id=webhook_id, organization=org)
+        qs = WebhookDelivery.objects.filter(endpoint=endpoint).order_by("-delivered_at")
+
+        success_param = request.query_params.get("success", "").strip().lower()
+        if success_param in {"true", "1"}:
+            qs = qs.filter(success=True)
+        elif success_param in {"false", "0"}:
+            qs = qs.filter(success=False)
+
+        event_filter = request.query_params.get("event_type", "").strip()
+        if event_filter:
+            qs = qs.filter(event_type=event_filter)
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        serializer = WebhookDeliverySerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class OrganizationWebhookDeliveryReplayView(APIView):
+    """Replay a historical or failed webhook delivery with fresh HMAC timestamp & signature."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = WebhookDeliverySerializer
+
+    def post(
+        self,
+        request: Request,
+        org_id: str,
+        webhook_id: str,
+        delivery_id: str,
+    ) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        endpoint = get_object_or_404(WebhookEndpoint, id=webhook_id, organization=org)
+        source_delivery = get_object_or_404(
+            WebhookDelivery,
+            id=delivery_id,
+            endpoint=endpoint,
+        )
+        raw_envelope = source_delivery.payload if isinstance(source_delivery.payload, dict) else {}
+        inner_data = raw_envelope.get("data")
+        event_data = dict(inner_data) if isinstance(inner_data, dict) else {}
+
+        new_delivery = deliver_webhook_sync(
+            endpoint,
+            source_delivery.event_type,
+            event_data,
+        )
+        _record_audit(
+            request,
+            action="webhook_replayed",
+            resource_type="WebhookDelivery",
+            resource_id=str(new_delivery.id),
+            organization=org,
+            metadata={
+                "source_delivery_id": str(source_delivery.id),
+                "webhook_id": str(endpoint.id),
+                "event_type": source_delivery.event_type,
+                "success": new_delivery.success,
+            },
+        )
+        return Response(WebhookDeliverySerializer(new_delivery).data, status=status.HTTP_200_OK)
+
+
+class OrganizationOutboxListView(APIView):
+    """Paginated tenant Transactional Outbox inspector (filterable by status and topic)."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OutboxEventSerializer
+
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        qs = OutboxEvent.objects.filter(organization=org).order_by("-created_at")
+
+        status_filter = request.query_params.get("status", "").strip()
+        if status_filter:
+            qs = qs.filter(status=status_filter)
+
+        topic_filter = request.query_params.get("topic", "").strip()
+        if topic_filter:
+            qs = qs.filter(topic=topic_filter)
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        serializer = OutboxEventSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class OrganizationOutboxReplayView(APIView):
+    """Replay a ``failed`` dead-letter Transactional Outbox event for immediate relay."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OutboxEventSerializer
+
+    def post(self, request: Request, org_id: str, event_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        event = get_object_or_404(OutboxEvent, id=event_id, organization=org)
+        try:
+            replayed = replay_dead_letter_outbox_event(event)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_409_CONFLICT)
+
+        _record_audit(
+            request,
+            action="outbox_replayed",
+            resource_type="OutboxEvent",
+            resource_id=str(replayed.id),
+            organization=org,
+            metadata={"event_type": replayed.event_type, "topic": replayed.topic},
+        )
+        replayed.refresh_from_db()
+        return Response(OutboxEventSerializer(replayed).data, status=status.HTTP_200_OK)
 
 
 class ExplorerConsoleView(View):

@@ -15,6 +15,7 @@ from apps.core.models import (
     Organization,
     OrganizationAPIKey,
     OrganizationMember,
+    OutboxEvent,
     WebhookDelivery,
     WebhookEndpoint,
 )
@@ -308,5 +309,27 @@ class WebhookDeliverySerializer(serializers.ModelSerializer):
             "success",
             "error_message",
             "delivered_at",
+        ]
+        read_only_fields = fields
+
+
+class OutboxEventSerializer(serializers.ModelSerializer):
+    """Read-only representation of a tenant Transactional Outbox event."""
+
+    class Meta:
+        model = OutboxEvent
+        fields = [
+            "id",
+            "organization",
+            "topic",
+            "event_type",
+            "payload",
+            "traceparent",
+            "status",
+            "attempts",
+            "next_attempt_at",
+            "dispatched_at",
+            "last_error",
+            "created_at",
         ]
         read_only_fields = fields
