@@ -19,7 +19,9 @@ from celery import Task as CeleryTask
 from celery import shared_task
 
 from apps.ai_assist.services import AIService
-from apps.core.models import AuditLog, Organization
+from apps.core.events import broadcast_task_websocket_event
+from apps.core.models import AuditLog, Organization, WebhookEndpoint
+from apps.core.webhooks import deliver_webhook_sync, dispatch_organization_webhooks
 from apps.tasks.models import Task
 from apps.tasks.views import invalidate_task_caches_for_scopes
 
@@ -45,10 +47,13 @@ def generate_task_translations(
 
     service = AIService()
     try:
+        org_id_str = str(task.organization_id) if task.organization_id else None
+        call_kwargs = {"organization_id": org_id_str} if org_id_str else {}
         result = service.suggest_task_translations(
             user_id=str(task.user_id),
             lang="en",
             user_input=user_input,
+            **call_kwargs,
         )
 
         for lang in ("en", "es", "fr"):
@@ -72,6 +77,16 @@ def generate_task_translations(
         if task.organization_id:
             scopes.append(f"org:{task.organization_id}")
         invalidate_task_caches_for_scopes(scopes, task_id=str(task.id))
+
+        ws_org = org_id_str or "global"
+        event_payload = {
+            "id": str(task.id),
+            "languages": [k for k in ("en", "es", "fr") if k in result],
+            "user_id": str(task.user_id),
+        }
+        broadcast_task_websocket_event(ws_org, "translated", event_payload)
+        if org_id_str:
+            dispatch_organization_webhooks(org_id_str, "task.translated", event_payload)
 
         logger.info("Translations generated for task %s", task_id)
         return result
@@ -158,3 +173,30 @@ def send_task_notification_email(task_id: str, event_type: str) -> bool:
     )
     logger.info("Notification email sent for task %s (%s)", task_id, event_type)
     return True
+
+
+@shared_task(bind=True, max_retries=4)
+def deliver_webhook_event(
+    self: CeleryTask,
+    endpoint_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Deliver a signed outbound webhook event with exponential retry backoff."""
+    try:
+        endpoint = WebhookEndpoint.objects.get(id=endpoint_id, is_active=True)
+    except WebhookEndpoint.DoesNotExist:
+        return {"delivered": False, "reason": "endpoint_inactive_or_missing"}
+
+    delivery = deliver_webhook_sync(endpoint, event_type, payload)
+    if not delivery.success and endpoint.is_active:
+        backoff = min(300, 15 * (2**self.request.retries))
+        raise self.retry(
+            exc=RuntimeError(delivery.error_message or "Webhook delivery failed"),
+            countdown=backoff,
+        )
+    return {
+        "delivered": delivery.success,
+        "delivery_id": str(delivery.id),
+        "status": delivery.response_status,
+    }

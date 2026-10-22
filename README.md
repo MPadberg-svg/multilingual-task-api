@@ -7,11 +7,12 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7.0-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?logo=openai&logoColor=white)](https://openai.com/)
-[![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](https://codecov.io)
+[![Version](https://img.shields.io/badge/release-v1.2.0-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
+[![Coverage](https://img.shields.io/badge/coverage-91%25-brightgreen)](https://codecov.io)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![AWS](https://img.shields.io/badge/AWS-ECS_Fargate-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/ecs/)
 
-**Production-grade multilingual REST API** for AI annotation platforms (Outlier AI, DataAnnotation, Mindrift/Toloka). Built with Django 5.2, PostgreSQL 16, Redis 7, Celery, Strawberry GraphQL, and OpenAI GPT-4o-mini. Deployed on AWS ECS Fargate via Terraform. Validated at **156 req/s with 96.3% cache hit rate**.
+**Production-grade multi-tenant RLHF & multilingual task orchestration API** for AI data platforms (Outlier AI, Scale AI, DataAnnotation, Mindrift/Toloka). Built with Django 5.2, PostgreSQL 16, Redis 7, Celery, Django Channels, Strawberry GraphQL, and OpenAI GPT-4o-mini. Deployed on AWS ECS Fargate via Terraform. Validated at **156 req/s with 96.3% cache hit rate**.
 
 ---
 
@@ -43,13 +44,12 @@ The Multilingual Task API solves the core infrastructure challenge of AI annotat
 
 **Key capabilities:**
 
-- **Multilingual CRUD** — Tasks stored with `django-parler` translated models; language served via `Accept-Language` header with automatic EN fallback
-- **Redis Caching** — Per-language cache keys with intelligent invalidation; 96.3% hit rate measured under 50 concurrent users
-- **LLM Integration** — Three OpenAI endpoints: translation suggestions, prompt quality evaluation, RLHF test case generation; protected by a circuit breaker
-- **Real-Time Updates** — Django Channels + Redis Pub/Sub WebSocket endpoint for live task feed
-- **RBAC** — 4-role hierarchy (Viewer → Contributor → Admin → Owner) with immutable AuditLog
-- **Async Processing** — Celery 5.4 for background translation generation, cache warming, and email dispatch
-- **GraphQL** — Strawberry schema alongside REST for flexible client queries
+- **Multilingual RLHF Pipeline** — Atomic priority-based task leasing (`POST /api/v1/tasks/claim/`), structured preference & 1–5 rubric annotations (`POST /api/v1/tasks/{id}/annotations/`), Inter-Annotator Agreement consensus auto-completion, split-vote adjudication (`/adjudicate/`), batch ingestion (`/bulk/` up to 100 tasks), and streaming NDJSON export (`/export/?format=jsonl`)
+- **Self-Serve Multi-Tenancy & RBAC** — Full `/api/v1/organizations/` CRUD, member seat-limit enforcement (`max_users`), 4-tier RBAC (`viewer` → `contributor` → `admin` → `owner`), last-owner & privilege-escalation guards, and filterable `/audit-logs/`
+- **Enterprise M2M API Keys & Idempotency** — Prefix-indexed SHA-256 `OrganizationAPIKey` (`mlk_live_<prefix>_...`) with route scopes (`tasks:read`, `tasks:write`, `tasks:export`, `ai:write`) plus `Idempotency-Key` middleware (`24h` Redis replay, `409` in-flight lock, `422` payload-mismatch protection)
+- **SSRF-Hardened Signed Webhooks** — Outbound `WebhookEndpoint` delivery signed with `X-MLTask-Signature-256: sha256=<hmac>`, non-redirecting TLS transport, literal IP + DNS-rebinding SSRF blocking (`127.0.0.0/8`, RFC1918, `169.254.169.254`), and Celery exponential backoff
+- **Async Auto-Translation & FinOps Telemetry** — `auto_translate=true` on task creation dispatches background OpenAI EN/ES/FR translation + live WebSocket notification while tracking per-tenant `prompt_tokens`, `completion_tokens`, and estimated USD spend in `/usage/` and Prometheus `/api/v1/metrics/`
+- **Mounted CSP-Nonce Live Console** — Interactive `/explorer/` operations UI protected by per-request cryptographic CSP nonces (`'nonce-...'`, zero `'unsafe-inline'`) with live `/ws/tasks/` WebSocket streaming
 
 ---
 
@@ -137,48 +137,52 @@ multilingual-task-api/
 │   ├── ci.yml               # Lint, test (90% gate), security scan
 │   └── deploy.yml           # Build ECR image → Deploy ECS (blue/green)
 ├── apps/
-│   ├── core/                # Platform foundation
-│   │   ├── models.py        # CustomUser (UUID), Organization, RBAC, AuditLog
+│   ├── core/                # Platform foundation, auth, tenancy, M2M & webhooks
+│   │   ├── models.py        # CustomUser, Organization, Member, APIKey, Webhook, AuditLog
+│   │   ├── authentication.py # Scoped SHA-256 OrganizationAPIKeyAuthentication
+│   │   ├── idempotency.py   # Redis Idempotency-Key deduplication middleware (24h TTL)
+│   │   ├── webhooks.py      # SSRF-hardened, HMAC-SHA256 outbound webhook engine
+│   │   ├── tenant_views.py  # /auth/me, /auth/logout, /organizations/*, /explorer/
+│   │   ├── serializers.py   # Auth, Organization, APIKey, Webhook & AuditLog serializers
 │   │   ├── views.py         # LivenessView, HealthCheckView, ReadinessView, MetricsView
-│   │   ├── middleware.py    # Language resolution, correlation ID, CSP, tenant
-│   │   ├── consumers.py     # WebSocket TaskUpdateConsumer (JWT auth)
-│   │   ├── events.py        # Redis pub/sub EventPublisher (singleton)
-│   │   ├── security.py      # InputValidator — XSS/SQLi detection
+│   │   ├── middleware.py    # Language, correlation ID, nonce CSP, tenant & RBAC
+│   │   ├── consumers.py     # WebSocket TaskUpdateConsumer (first-message JWT auth)
+│   │   ├── events.py        # Redis pub/sub EventPublisher + Channels broadcaster
+│   │   ├── security.py      # InputValidator — XSS/SQLi/code-execution guardrails
 │   │   ├── throttling.py    # AIAssistRateThrottle (20/hr), BurstRateThrottle (5/min)
 │   │   ├── performance.py   # QueryProfiler, optimized_task_queryset, batch updates
 │   │   ├── graphql/schema.py # Strawberry Query + Mutation types
-│   │   └── tests/           # 8 test modules, 68 tests
-│   ├── tasks/               # Core business logic
-│   │   ├── models.py        # Task (TranslatableModel, UUID PK, soft-delete)
-│   │   ├── serializers.py   # Manual EN/ES/FR translation serializer
-│   │   ├── views.py         # TaskViewSet — cached, tenant-scoped, restore action
-│   │   ├── filters.py       # TaskFilter — multilingual search, status, date range
-│   │   ├── signals.py       # post_save/post_delete → Redis pub/sub
-│   │   ├── tasks.py         # Celery: translate, invalidate cache, audit, email
-│   │   └── tests/           # 2 test modules, 19 tests
-│   ├── ai_assist/           # LLM integration
-│   │   ├── services.py      # AIService — caching, validation, circuit breaker
+│   │   └── tests/           # Core, tenancy, security, M2M, webhook & GraphQL tests
+│   ├── tasks/               # Multilingual RLHF workflow engine
+│   │   ├── models.py        # Task (UUID, leasing, consensus) + TaskAnnotation
+│   │   ├── consensus.py     # Inter-Annotator Agreement (IAA) & consensus evaluator
+│   │   ├── serializers.py   # EN/ES/FR Task, Annotation, Claim & Adjudicate serializers
+│   │   ├── views.py         # TaskViewSet — claim, annotations, adjudicate, bulk, export
+│   │   ├── filters.py       # TaskFilter — multilingual search, status, priority, dates
+│   │   ├── signals.py       # post_save/post_delete → Redis pub/sub & Channels
+│   │   ├── tasks.py         # Celery: auto-translate, webhook retry, cache, audit, email
+│   │   └── tests/           # CRUD, cache, RLHF leasing, consensus, bulk & JSONL tests
+│   ├── ai_assist/           # LLM integration & FinOps accounting
+│   │   ├── services.py      # AIService — Pydantic v2 schemas, caching, token telemetry
 │   │   ├── circuit_breaker.py # OpenAI resilience (CLOSED/OPEN/HALF_OPEN)
-│   │   ├── prompt_templates.py # PromptTemplateManager (versioned)
+│   │   ├── prompt_templates.py # PromptTemplateManager (versioned + system guardrails)
 │   │   ├── views.py         # 3 throttled function-based views
-│   │   └── tests/           # 14 tests
+│   │   └── tests/           # AI resilience, prompt-injection & FinOps tests
 │   └── analytics/           # Observability
 │       ├── middleware.py    # RequestTimingMiddleware (0 DB queries)
-│       └── tests/           # 5 tests
+│       └── tests/           # Timing & header tests
 ├── config/
-│   ├── settings/            # base.py, development.py, production.py
-│   ├── urls.py              # REST + GraphQL + Docs routing
-│   ├── asgi.py              # ASGI + WebSocket routing
+│   ├── settings/            # base.py, development.py, production.py, testing.py
+│   ├── urls.py              # REST + Auth + Tenancy + Explorer + GraphQL + Docs routing
+│   ├── asgi.py              # ASGI + Origin-validated WebSocket routing
 │   └── celery.py            # Celery app + task routing
 ├── tests/
-│   ├── conftest.py          # Shared pytest fixtures
-│   ├── factories.py         # UserFactory, TaskFactory (EN/ES/FR)
-│   └── benchmarks/load_test.py # Locust performance tests
+│   └── benchmarks/load_test.py # Locust performance & throughput suite
 ├── terraform/               # AWS infrastructure (ECS, RDS, ElastiCache, ALB, CF)
 ├── docs/
 │   ├── adr/                 # Architecture Decision Records (4 ADRs)
 │   ├── PERFORMANCE_BENCHMARK.md
-│   └── api-explorer.html    # Interactive API demo
+│   └── api-explorer.html    # Interactive CSP-nonce-safe API & WebSocket console
 ├── .pre-commit-config.yaml  # black, isort, flake8, mypy, bandit
 ├── setup.cfg                # Centralized lint configuration
 ├── CHANGELOG.md             # Keep-a-Changelog format
@@ -279,7 +283,7 @@ make docker-clean    # Remove volumes + images
 - **Swagger UI:** `http://localhost:8000/api/docs/`
 - **ReDoc:** `http://localhost:8000/api/redoc/`
 - **OpenAPI Schema (JSON):** `http://localhost:8000/api/schema/`
-- **Interactive Demo:** `docs/api-explorer.html`
+- **Live RLHF Operations Console:** `http://localhost:8000/explorer/`
 
 ### Base URL
 
@@ -289,33 +293,55 @@ http://localhost:8000/api/v1/
 
 ### Endpoints
 
-#### Infrastructure
+#### Infrastructure & Observability
 
 | Endpoint | Method | Auth | Description |
 |----------|--------|------|-------------|
 | `/api/v1/live/` | GET | None | Liveness probe — 200 if process is alive |
 | `/api/v1/health/` | GET | None | Health check — DB + Redis status |
 | `/api/v1/ready/` | GET | None | Readiness probe — 503 if any dependency down |
-| `/api/v1/metrics/` | GET | None | Prometheus-format metrics |
+| `/api/v1/metrics/` | GET | `METRICS_TOKEN` / Staff | Prometheus metrics (HTTP, cache hit rate, OpenAI tokens & USD cost) |
+| `/explorer/` | GET | None | CSP-nonce-hardened interactive API & live WebSocket console |
 
-#### Authentication
+#### Authentication & Session Lifecycle
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/auth/token/` | POST | Obtain JWT access + refresh tokens |
-| `/api/v1/auth/token/refresh/` | POST | Refresh expired access token |
+| `/api/v1/auth/token/` | POST | Obtain JWT access + refresh tokens (rate-limited) |
+| `/api/v1/auth/token/refresh/` | POST | Rotate & refresh access token |
 | `/api/v1/auth/token/verify/` | POST | Verify token validity |
+| `/api/v1/auth/me/` | GET, PATCH | Inspect or update caller profile + active organization memberships |
+| `/api/v1/auth/logout/` | POST | Blacklist caller-owned refresh token + persist `AuditLog` |
 
-#### Tasks
+#### Multi-Tenant Organizations, RBAC, M2M API Keys & Webhooks
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/tasks/` | GET | List tasks (cached 5min, language-scoped) |
-| `/api/v1/tasks/` | POST | Create task with EN/ES/FR translations |
-| `/api/v1/tasks/{id}/` | GET | Task detail (cached 10min) |
-| `/api/v1/tasks/{id}/` | PATCH | Update task fields |
-| `/api/v1/tasks/{id}/` | DELETE | Soft-delete (sets `is_active=False`) |
-| `/api/v1/tasks/{id}/restore/` | POST | Restore a soft-deleted task |
+| `/api/v1/organizations/` | GET, POST | List caller's organizations or bootstrap a new tenant (`owner`) |
+| `/api/v1/organizations/{org_id}/` | GET, PATCH | Retrieve or update organization settings (`admin`/`owner`) |
+| `/api/v1/organizations/{org_id}/members/` | GET, POST | List members or invite user enforcing `max_users` seat quota |
+| `/api/v1/organizations/{org_id}/members/{member_id}/` | PATCH, DELETE | Update role or remove member (protects last `owner`) |
+| `/api/v1/organizations/{org_id}/audit-logs/` | GET | Paginated, filterable immutable security audit trail |
+| `/api/v1/organizations/{org_id}/usage/` | GET | Real-time plan quotas + cumulative OpenAI token & USD FinOps telemetry |
+| `/api/v1/organizations/{org_id}/api-keys/` | GET, POST | List or mint SHA-256 scoped M2M API keys (`mlk_live_<prefix>_...`) |
+| `/api/v1/organizations/{org_id}/api-keys/{key_id}/` | DELETE | Immediately revoke an M2M API key |
+| `/api/v1/organizations/{org_id}/webhooks/` | GET, POST | List or register SSRF-validated outbound HMAC webhook endpoints |
+| `/api/v1/organizations/{org_id}/webhooks/{webhook_id}/` | DELETE | Delete a webhook endpoint |
+| `/api/v1/organizations/{org_id}/webhooks/{webhook_id}/test/` | POST | Send signed `webhook.ping` event and inspect delivery receipt |
+
+#### Multilingual Tasks & RLHF Annotation Pipeline
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/v1/tasks/` | GET | List tasks (cached 5min, language- & query-scoped; filter by `status`, `priority`, `search`) |
+| `/api/v1/tasks/` | POST | Create task (`auto_translate=true` queues async OpenAI EN/ES/FR translation) |
+| `/api/v1/tasks/bulk/` | POST | Atomic batch creation (up to 100 tasks, enforcing `Organization.max_tasks`) |
+| `/api/v1/tasks/claim/` | POST | Atomically lease highest-priority unannotated task (`FOR UPDATE SKIP LOCKED`) |
+| `/api/v1/tasks/export/?format=jsonl` | GET | Stream RLHF dataset (translations, rubric scores, consensus) as NDJSON |
+| `/api/v1/tasks/{id}/` | GET, PATCH, DELETE | Retrieve (cached 10min), update, or soft-delete (`is_active=False`) |
+| `/api/v1/tasks/{id}/restore/` | POST | Restore a soft-deleted task (`admin`/`owner`) |
+| `/api/v1/tasks/{id}/annotations/` | GET, POST | List or submit structured RLHF preference + 1–5 rubric scores & trigger IAA consensus |
+| `/api/v1/tasks/{id}/adjudicate/` | POST | Resolve split-vote disagreement and finalize gold `consensus_choice` (`admin`/`owner`) |
 
 **Task status lifecycle:** `pending` → `in_progress` → `completed` → `archived`
 
@@ -500,26 +526,24 @@ curl -X POST http://localhost:8000/api/v1/ai/generate-test-cases/ \
 
 ## WebSocket Real-Time Updates
 
-Connect to receive live task events for an organization:
+Connect to receive live task & auto-translation events using first-message JWT authentication (preventing token leakage in URL query logs):
 
 ```javascript
 const token = "your-jwt-access-token";
-const ws = new WebSocket(`ws://localhost:8000/ws/tasks/?token=${token}`);
+const ws = new WebSocket("ws://localhost:8000/ws/tasks/");
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({ type: "authenticate", token, organization_id: "optional-org-uuid" }));
+};
 
 ws.onmessage = (event) => {
   const data = JSON.parse(event.data);
   console.log(data);
-  // {
-  //   "type": "task",
-  //   "action": "updated",
-  //   "timestamp": "2026-05-22T14:30:00Z",
-  //   "data": { "id": "...", "status": "completed", ... }
-  // }
 };
 ```
 
-**Events emitted:** `created` · `updated` · `deleted`
-**Auth:** JWT token passed as `?token=` query parameter
+**Events emitted:** `created` · `updated` · `deleted` · `translated`
+**Auth:** First-message JSON frame `{"type": "authenticate", "token": "<jwt>"}` within 5s timeout + `AllowedHostsOriginValidator`
 **Channel pattern:** `mltask:events:{org_id}:tasks`
 
 ---
@@ -604,25 +628,18 @@ make locust-headless    # Headless: 50 users, 60s run, CSV output
 
 The `config.settings.testing` module is selected automatically via `pytest.ini` (`DJANGO_SETTINGS_MODULE`). This means the full test suite runs with **zero infrastructure** — no PostgreSQL, no Redis, no Docker.
 
-### Test Suite (178 tests · 91.56% coverage)
+### Test Suite (193 tests · 91% coverage)
 
-| Module | Tests | Covers |
-|--------|-------|--------|
-| `apps/core/tests/test_custom_user.py` | 8 | CustomUser model + manager |
-| `apps/core/tests/test_views.py` | 12 | Liveness, health, readiness, metrics |
-| `apps/core/tests/test_security.py` | 10 | InputValidator — XSS / SQLi |
-| `apps/core/tests/test_throttling.py` | 13 | AIAssistRateThrottle + BurstRateThrottle |
-| `apps/core/tests/test_events.py` | 6 | EventPublisher + Redis pub/sub |
-| `apps/core/tests/test_graphql.py` | 11 | Strawberry GraphQL queries + mutations |
-| `apps/core/tests/test_middleware.py` | 6 | Language resolution + request logging |
-| `apps/core/tests/test_performance.py` | 9 | QueryProfiler, batch updates, translations |
-| `apps/core/tests/test_management_commands.py` | 8 | seed_data, warm_cache, superuser |
-| `apps/core/tests/test_consumers.py` | 4 | WebSocket JWT auth |
-| `apps/tasks/tests/test_api.py` | 13 | CRUD, multilingual, auth, isolation |
-| `apps/tasks/tests/test_cache.py` | 6 | Per-language caching + invalidation |
-| `apps/ai_assist/tests/test_ai_services.py` | 14 | JSON parsing, circuit breaker, injection |
-| `apps/ai_assist/tests/test_views.py` | 9 | AI endpoint auth, security, happy path |
-| `apps/analytics/tests/test_middleware.py` | 3 | RequestTimingMiddleware (0 DB queries) |
+| Module | Covers |
+|--------|--------|
+| `apps/core/tests/test_wave1_tenancy_auth_idempotency.py` | `/auth/me/`, `/auth/logout/` blacklisting, Organization CRUD/RBAC/quotas, AuditLogs, `Idempotency-Key` |
+| `apps/tasks/tests/test_wave2_wave3_rlhf_bulk_export.py` | Atomic task leasing, rubric annotations, IAA consensus, split adjudication, `/bulk/`, `/export/?format=jsonl`, `auto_translate` |
+| `apps/core/tests/test_wave4_apikeys_webhooks_explorer_finops.py` | SHA-256 M2M API keys & scopes, SSRF/DNS-rebinding webhook defense, HMAC-SHA256 signing, FinOps token/USD metrics, `/explorer/` nonce CSP |
+| `apps/core/tests/test_tenancy_rbac_and_i18n.py` | 4-tier RBAC, plan quota enforcement, language header fallback |
+| `apps/core/tests/test_graphql_and_websockets_security.py` | GraphQL auth/RBAC isolation, WebSocket origin & first-message JWT security |
+| `apps/ai_assist/tests/test_hardening_and_resilience.py` | Single-flight circuit breaker, Pydantic v2 output schemas, prompt-injection defense |
+| `apps/tasks/tests/test_multilingual_tenancy_and_celery.py` | Zero N+1 query guarantees, multi-language cache invalidation, Celery tasks |
+| `apps/core/tests/test_views.py` · `test_security.py` · `test_throttling.py` | Health/readiness/metrics auth, XSS/SQLi `InputValidator`, burst & sustained rate limits |
 
 ### Test pyramid
 
@@ -646,18 +663,19 @@ The `config.settings.testing` module is selected automatically via `pytest.ini` 
 
 | Control | Implementation |
 |---------|---------------|
-| Authentication | JWT — 30min access / 7-day refresh tokens |
-| Authorization | RBAC — 4 roles: Viewer → Contributor → Admin → Owner |
-| Input validation | `InputValidator` — regex-based XSS + SQLi detection on every AI call |
-| Transport | HTTPS only, HSTS 1 year, secure cookies |
-| Security headers | CSP, X-Frame-Options, Referrer-Policy |
-| Secrets | AWS Secrets Manager — never in codebase |
-| Audit trail | Immutable `AuditLog` — stores IP, user agent, metadata; no add/change/delete via admin |
-| Rate limiting | 20 req/hr sustained + 5 req/min burst on all AI endpoints |
-| AI resilience | Circuit breaker — auto-opens after 5 failures, retries after 60s |
-| Static analysis | `bandit` (medium+ severity gate in CI) |
-| Dependency scanning | `pip-audit` (CVE check in CI) |
-| Container | Non-root user, read-only filesystem, multi-stage build |
+| Authentication | SimpleJWT (`15m` access / `7d` rotating blacklisted refresh) + prefix-indexed SHA-256 `OrganizationAPIKey` (`hmac.compare_digest`) |
+| Authorization | 4-tier tenant RBAC (`viewer` → `contributor` → `admin` → `owner`) + granular M2M scopes (`tasks:read`, `tasks:write`, `tasks:export`, `ai:write`) |
+| Idempotency | Redis `Idempotency-Key` middleware (`24h` replay cache, `30s` atomic lock → `409`, SHA-256 payload mismatch → `422`) |
+| Outbound SSRF & Webhooks | Scheme allowlist, literal IP + DNS-rebinding private/loopback/metadata (`169.254.169.254`) blocking, non-redirecting `http.client` TLS, `X-MLTask-Signature-256` HMAC-SHA256 |
+| Input validation | `InputValidator` — XSS, SQLi, and dangerous code/shell pattern detection across REST, GraphQL, and AI prompts |
+| Transport & CSP | HTTPS/HSTS (`1y` preload), locked `default-src 'none'` CSP on JSON APIs, cryptographic per-request `'nonce-...'` CSP on `/explorer/`, `AllowedHostsOriginValidator` on WebSockets |
+| Observability auth | `/api/v1/metrics/` protected by constant-time `METRICS_TOKEN` Bearer check or authenticated staff session |
+| Secrets | Environment & AWS Secrets Manager injection — zero secrets stored in repository |
+| Audit trail | Immutable `AuditLog` — records actor, tenant, IP (`NUM_TRUSTED_PROXIES`-aware), user agent, and structured metadata |
+| Rate limiting | Auth login/refresh/verify throttles + `20/hr` sustained & `5/min` burst throttles + per-tenant daily AI quotas |
+| AI resilience | Single-flight half-open `CircuitBreaker` + Pydantic v2 structured output schemas (never caches degraded responses) |
+| Static & CVE scanning | `bandit -ll` (0 findings, 0 `#nosec` skips) + `pip-audit --strict` (0 production CVEs) |
+| Container | Non-root user, multi-stage Docker build, health-checked Uvicorn workers |
 
 ---
 

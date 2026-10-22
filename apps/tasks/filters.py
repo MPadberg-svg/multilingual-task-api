@@ -21,6 +21,10 @@ class TaskFilter(filters.FilterSet):
         choices=Task._meta.get_field("status").choices,
         help_text="Filter by exact task status.",
     )
+    priority = filters.ChoiceFilter(
+        choices=Task._meta.get_field("priority").choices,
+        help_text="Filter by task priority.",
+    )
     is_active = filters.BooleanFilter(
         help_text="Filter by active (non-deleted) state.",
     )
@@ -39,6 +43,7 @@ class TaskFilter(filters.FilterSet):
         model = Task
         fields = [
             "status",
+            "priority",
             "is_active",
             "created_after",
             "created_before",
