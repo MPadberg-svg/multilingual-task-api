@@ -95,6 +95,20 @@ def resolve_authenticated_user(request: HttpRequest) -> Any:
         request.user = forced_user
         return forced_user
 
+    # Support scoped M2M API keys (X-API-Key / Authorization: Api-Key)
+    from apps.core.authentication import extract_raw_api_key, resolve_api_key_principal
+
+    if extract_raw_api_key(request):
+        try:
+            key_result = resolve_api_key_principal(request)
+            if key_result is not None:
+                key_user, _key_obj = key_result
+                request.user = key_user  # type: ignore[assignment]
+                return key_user
+        except Exception:
+            # Defer 401/403 rendering to DRF authentication layer
+            return None
+
     auth_header = request.headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
         from rest_framework_simplejwt.authentication import JWTAuthentication
@@ -229,40 +243,76 @@ class RequestLoggingMiddleware(MiddlewareMixin):
 
 
 class ContentSecurityPolicyMiddleware(MiddlewareMixin):
-    """Inject security headers on every outgoing response."""
+    """Inject strict, context-aware Content-Security-Policy and browser security headers."""
 
     def process_response(self, request: HttpRequest, response: HttpResponse) -> HttpResponse:
-        """Add Content-Security-Policy, Referrer-Policy, and Permissions-Policy headers."""
-        response["Content-Security-Policy"] = (
-            "default-src 'self'; "
-            "script-src 'self' 'unsafe-inline'; "
-            "style-src 'self' 'unsafe-inline'; "
-            "img-src 'self' data:; "
-            "font-src 'self'; "
-            "connect-src 'self'; "
-            "media-src 'self'; "
-            "object-src 'none'; "
-            "frame-ancestors 'none'; "
-            "base-uri 'self'; "
-            "form-action 'self';"
-        )
+        """Apply nonce-based CSP for /explorer/, locked-down CSP for JSON APIs, and safe defaults."""
+        csp_nonce = getattr(request, "_csp_nonce", None)
+        content_type = (response.get("Content-Type") or "").lower()
+
+        if csp_nonce:
+            response["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                f"script-src 'self' 'nonce-{csp_nonce}'; "
+                f"style-src 'self' 'nonce-{csp_nonce}'; "
+                "img-src 'self' data:; "
+                "font-src 'self'; "
+                "connect-src 'self' ws: wss:; "
+                "object-src 'none'; "
+                "frame-ancestors 'none'; "
+                "base-uri 'self'; "
+                "form-action 'self';"
+            )
+        elif "application/json" in content_type or "application/x-ndjson" in content_type:
+            response["Content-Security-Policy"] = (
+                "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none';"
+            )
+        else:
+            response["Content-Security-Policy"] = (
+                "default-src 'self'; "
+                "script-src 'self' 'unsafe-inline'; "
+                "style-src 'self' 'unsafe-inline'; "
+                "img-src 'self' data:; "
+                "font-src 'self'; "
+                "connect-src 'self'; "
+                "media-src 'self'; "
+                "object-src 'none'; "
+                "frame-ancestors 'none'; "
+                "base-uri 'self'; "
+                "form-action 'self';"
+            )
         response["Referrer-Policy"] = "strict-origin-when-cross-origin"
         response["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
         return response
 
 
 class TenantMiddleware(MiddlewareMixin):
-    """Resolve tenant context from ``X-Organization-ID`` header or ``org`` query param.
+    """Resolve tenant context from M2M API key, ``X-Organization-ID`` header, or ``org`` param.
 
     Attaches ``request.organization`` and ``request.membership_role``.
     """
 
     def process_request(self, request: HttpRequest) -> HttpResponse | None:
-        """Resolve organization and membership safely for both JWT and session users."""
+        """Resolve organization and membership safely for API-key, JWT, and session users."""
         setattr(request, "organization", None)
         setattr(request, "membership_role", None)
 
         org_id = (request.headers.get("X-Organization-ID") or request.GET.get("org") or "").strip()
+
+        # Check M2M API key first — binds organization directly to the key's tenant
+        from apps.core.authentication import extract_raw_api_key
+
+        if extract_raw_api_key(request):
+            user = resolve_authenticated_user(request)
+            bound_org = getattr(request, "organization", None)
+            if user is not None and bound_org is not None:
+                if org_id and str(bound_org.id) != org_id:
+                    return JsonResponse(
+                        {"error": "X-Organization-ID does not match API key tenant"},
+                        status=403,
+                    )
+                return None
+
         if not org_id:
             return None
 
@@ -334,15 +384,18 @@ class TenantPermissionMiddleware(MiddlewareMixin):
         path = request.path
 
         # Destructive or administrative task actions require admin or owner role
-        is_privileged_action = request.method == "DELETE" or path.rstrip("/").endswith("/restore")
+        normalized_path = path.rstrip("/")
+        is_privileged_action = request.method == "DELETE" or normalized_path.endswith(
+            ("/restore", "/adjudicate")
+        )
         required_roles = self.PRIVILEGED_ROLES if is_privileged_action else self.WRITE_ROLES
 
         if role not in required_roles:
             return JsonResponse({"error": "Insufficient permissions"}, status=403)
 
-        # Enforce max_tasks ONLY when adding active tasks (create or restore)
-        is_task_create = request.method == "POST" and path.rstrip("/") == "/api/v1/tasks"
-        is_task_restore = request.method == "POST" and path.rstrip("/").endswith("/restore")
+        # Enforce max_tasks ONLY when adding active tasks (create or restore; bulk checks exact batch size)
+        is_task_create = request.method == "POST" and normalized_path == "/api/v1/tasks"
+        is_task_restore = request.method == "POST" and normalized_path.endswith("/restore")
         if is_task_create or is_task_restore:
             active_task_count = organization.tasks.filter(is_active=True).count()
             if active_task_count >= organization.max_tasks:

@@ -53,6 +53,11 @@ def _resolve_lang_param(request: Request) -> str:
     return resolved[:10] if resolved else "en"
 
 
+def _resolve_org_id(request: Request) -> str | None:
+    org = getattr(request, "organization", None)
+    return str(org.id) if org is not None else None
+
+
 def _circuit_open_response() -> Response:
     retry_after = str(openai_circuit_breaker.recovery_timeout)
     return Response(
@@ -68,14 +73,12 @@ def _circuit_open_response() -> Response:
 @extend_schema(
     request={
         "application/json": {
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "description": {"type": "string"},
-                    "lang": {"type": "string", "default": "en"},
-                },
-                "required": ["description"],
-            }
+            "type": "object",
+            "properties": {
+                "description": {"type": "string"},
+                "lang": {"type": "string", "default": "en"},
+            },
+            "required": ["description"],
         }
     },
     responses={
@@ -107,8 +110,10 @@ def suggest_task(request: Request) -> Response:
         return Response({"error": "Description is required"}, status=400)
 
     try:
+        org_id = _resolve_org_id(request)
+        call_kwargs = {"organization_id": org_id} if org_id else {}
         result = _ai_service.suggest_task_translations(
-            user_id=str(request.user.id), lang=lang, user_input=description
+            user_id=str(request.user.id), lang=lang, user_input=description, **call_kwargs
         )
         return Response(result)
     except ValueError as exc:
@@ -127,14 +132,12 @@ def suggest_task(request: Request) -> Response:
 @extend_schema(
     request={
         "application/json": {
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "prompt_text": {"type": "string"},
-                    "lang": {"type": "string", "default": "en"},
-                },
-                "required": ["prompt_text"],
-            }
+            "type": "object",
+            "properties": {
+                "prompt_text": {"type": "string"},
+                "lang": {"type": "string", "default": "en"},
+            },
+            "required": ["prompt_text"],
         }
     },
     responses={
@@ -166,8 +169,10 @@ def evaluate_quality(request: Request) -> Response:
         return Response({"error": "Prompt text is required"}, status=400)
 
     try:
+        org_id = _resolve_org_id(request)
+        call_kwargs = {"organization_id": org_id} if org_id else {}
         result = _ai_service.evaluate_prompt_quality(
-            user_id=str(request.user.id), lang=lang, user_input=prompt_text
+            user_id=str(request.user.id), lang=lang, user_input=prompt_text, **call_kwargs
         )
         return Response(result)
     except ValueError as exc:
@@ -186,14 +191,12 @@ def evaluate_quality(request: Request) -> Response:
 @extend_schema(
     request={
         "application/json": {
-            "schema": {
-                "type": "object",
-                "properties": {
-                    "code_snippet": {"type": "string"},
-                    "lang": {"type": "string", "default": "en"},
-                },
-                "required": ["code_snippet"],
-            }
+            "type": "object",
+            "properties": {
+                "code_snippet": {"type": "string"},
+                "lang": {"type": "string", "default": "en"},
+            },
+            "required": ["code_snippet"],
         }
     },
     responses={
@@ -226,8 +229,10 @@ def generate_test_cases(request: Request) -> Response:
         return Response({"error": "Code snippet is required"}, status=400)
 
     try:
+        org_id = _resolve_org_id(request)
+        call_kwargs = {"organization_id": org_id} if org_id else {}
         result = _ai_service.generate_rlhf_test_cases(
-            user_id=str(request.user.id), lang=lang, user_input=code_snippet
+            user_id=str(request.user.id), lang=lang, user_input=code_snippet, **call_kwargs
         )
         return Response(result)
     except ValueError as exc:

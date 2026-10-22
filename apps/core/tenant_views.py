@@ -1,0 +1,580 @@
+"""Views for auth lifecycle (/me/, /logout/), organizations, audit logs, FinOps usage, API keys, webhooks, and live console."""
+
+from __future__ import annotations
+
+import secrets
+from pathlib import Path
+from typing import Any
+
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
+from django.db.models import Count
+from django.http import HttpRequest, HttpResponse
+from django.shortcuts import get_object_or_404
+from django.utils import timezone
+from django.views import View
+
+from drf_spectacular.utils import extend_schema
+from rest_framework import status
+from rest_framework.exceptions import PermissionDenied
+from rest_framework.permissions import IsAuthenticated
+from rest_framework.request import Request
+from rest_framework.response import Response
+from rest_framework.views import APIView
+from rest_framework_simplejwt.exceptions import TokenError
+from rest_framework_simplejwt.tokens import RefreshToken
+
+from apps.core.middleware import RequestLoggingMiddleware
+from apps.core.models import (
+    AuditLog,
+    Organization,
+    OrganizationAPIKey,
+    OrganizationMember,
+    WebhookEndpoint,
+)
+from apps.core.pagination import StandardResultsSetPagination
+from apps.core.serializers import (
+    AuditLogSerializer,
+    CurrentUserSerializer,
+    LogoutSerializer,
+    OrganizationAPIKeyCreateSerializer,
+    OrganizationAPIKeySerializer,
+    OrganizationMemberCreateSerializer,
+    OrganizationMemberSerializer,
+    OrganizationSerializer,
+    WebhookDeliverySerializer,
+    WebhookEndpointCreateSerializer,
+    WebhookEndpointSerializer,
+)
+from apps.core.views import get_org_ai_usage
+from apps.core.webhooks import deliver_webhook_sync
+
+User = get_user_model()
+
+_ADMIN_ROLES = frozenset({"admin", "owner"})
+_ROLE_RANK = {"viewer": 1, "contributor": 2, "admin": 3, "owner": 4}
+
+
+def _record_audit(
+    request: Request,
+    *,
+    action: str,
+    resource_type: str,
+    resource_id: str,
+    organization: Organization | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> AuditLog:
+    ip_raw = RequestLoggingMiddleware._get_client_ip(request._request)
+    ip_val = ip_raw if ip_raw != "unknown" else None
+    user_agent = str(request.META.get("HTTP_USER_AGENT", ""))[:500]
+    return AuditLog.objects.create(
+        organization=organization,
+        user=request.user if getattr(request.user, "is_authenticated", False) else None,
+        action=action,
+        resource_type=resource_type,
+        resource_id=resource_id,
+        ip_address=ip_val,
+        user_agent=user_agent,
+        metadata=metadata or {},
+    )
+
+
+def _get_org_and_role(user: Any, org_id: Any) -> tuple[Organization, str]:
+    """Fetch active Organization and caller's membership role or raise 404."""
+    organization = get_object_or_404(
+        Organization.objects.prefetch_related("members"),
+        id=org_id,
+        is_active=True,
+        members__user_id=user.id,
+    )
+    membership = OrganizationMember.objects.get(organization=organization, user_id=user.id)
+    return organization, membership.role
+
+
+def _require_org_admin(user: Any, org_id: Any) -> tuple[Organization, str]:
+    organization, role = _get_org_and_role(user, org_id)
+    if role not in _ADMIN_ROLES:
+        raise PermissionDenied("Admin or owner role is required for this organization action.")
+    return organization, role
+
+
+class CurrentUserView(APIView):
+    """Retrieve or update the authenticated user's profile and active organizations."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = CurrentUserSerializer
+
+    def get(self, request: Request) -> Response:
+        serializer = CurrentUserSerializer(request.user)
+        return Response(serializer.data)
+
+    def patch(self, request: Request) -> Response:
+        serializer = CurrentUserSerializer(request.user, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class LogoutView(APIView):
+    """Blacklist a SimpleJWT refresh token owned by the authenticated caller."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = LogoutSerializer
+
+    def post(self, request: Request) -> Response:
+        serializer = LogoutSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        raw_refresh = str(serializer.validated_data["refresh"])
+
+        try:
+            token = RefreshToken(raw_refresh)  # type: ignore[arg-type]
+        except TokenError:
+            return Response(
+                {"error": "Invalid or expired refresh token."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        token_user_id = str(token.get("user_id", ""))
+        if token_user_id != str(request.user.id):
+            raise PermissionDenied("Refresh token does not belong to the authenticated user.")
+
+        try:
+            token.blacklist()
+        except TokenError:
+            return Response(
+                {"error": "Refresh token is already blacklisted."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        _record_audit(
+            request,
+            action="logout",
+            resource_type="User",
+            resource_id=str(request.user.id),
+        )
+        return Response({"status": "logged_out"}, status=status.HTTP_200_OK)
+
+
+class OrganizationListCreateView(APIView):
+    """List caller's organizations or bootstrap a new tenant with caller as owner."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationSerializer
+
+    @extend_schema(responses=OrganizationSerializer(many=True))
+    def get(self, request: Request) -> Response:
+        orgs = (
+            Organization.objects.filter(is_active=True, members__user_id=request.user.id)
+            .annotate(member_count_val=Count("members", distinct=True))
+            .prefetch_related("members")
+            .order_by("-created_at")
+        )
+        serializer = OrganizationSerializer(orgs, many=True, context={"request": request})
+        return Response(serializer.data)
+
+    @transaction.atomic
+    def post(self, request: Request) -> Response:
+        serializer = OrganizationSerializer(data=request.data, context={"request": request})
+        serializer.is_valid(raise_exception=True)
+        org: Organization = serializer.save()
+        OrganizationMember.objects.create(
+            organization=org,
+            user=request.user,
+            role="owner",
+            is_billing_contact=True,
+        )
+        _record_audit(
+            request,
+            action="created",
+            resource_type="Organization",
+            resource_id=str(org.id),
+            organization=org,
+            metadata={"slug": org.slug},
+        )
+        refreshed = Organization.objects.prefetch_related("members").get(id=org.id)
+        out = OrganizationSerializer(refreshed, context={"request": request}).data
+        return Response(out, status=status.HTTP_201_CREATED)
+
+
+class OrganizationDetailView(APIView):
+    """Retrieve or update an organization's metadata."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationSerializer
+
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _get_org_and_role(request.user, org_id)
+        return Response(OrganizationSerializer(org, context={"request": request}).data)
+
+    def patch(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        serializer = OrganizationSerializer(
+            org, data=request.data, partial=True, context={"request": request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        _record_audit(
+            request,
+            action="updated",
+            resource_type="Organization",
+            resource_id=str(org.id),
+            organization=org,
+        )
+        return Response(serializer.data)
+
+
+class OrganizationMemberListCreateView(APIView):
+    """List organization members or add an active user enforcing seat quotas and RBAC."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationMemberSerializer
+
+    @extend_schema(responses=OrganizationMemberSerializer(many=True))
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _get_org_and_role(request.user, org_id)
+        members = org.members.select_related("user").order_by("joined_at")
+        return Response(OrganizationMemberSerializer(members, many=True).data)
+
+    @transaction.atomic
+    def post(self, request: Request, org_id: str) -> Response:
+        org, actor_role = _require_org_admin(request.user, org_id)
+        serializer = OrganizationMemberCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        target_email = str(serializer.validated_data["email"]).strip().lower()
+        target_role = str(serializer.validated_data["role"])
+
+        if target_role == "owner" and actor_role != "owner":
+            raise PermissionDenied("Only an organization owner can grant the owner role.")
+
+        target_user = User.objects.filter(email__iexact=target_email, is_active=True).first()
+        if target_user is None:
+            return Response(
+                {"error": "No active user found with that email address."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if OrganizationMember.objects.filter(organization=org, user=target_user).exists():
+            return Response(
+                {"error": "User is already a member of this organization."},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        try:
+            member = OrganizationMember.objects.create(
+                organization=org,
+                user=target_user,
+                role=target_role,
+            )
+        except DjangoValidationError as exc:
+            return Response(
+                {"error": exc.messages[0] if exc.messages else str(exc)},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        _record_audit(
+            request,
+            action="permission_changed",
+            resource_type="OrganizationMember",
+            resource_id=str(member.id),
+            organization=org,
+            metadata={"target_user": str(target_user.id), "role": target_role},
+        )
+        return Response(
+            OrganizationMemberSerializer(member).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class OrganizationMemberDetailView(APIView):
+    """Update a member's role or remove them while protecting the last owner."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationMemberSerializer
+
+    @transaction.atomic
+    def patch(self, request: Request, org_id: str, member_id: str) -> Response:
+        org, actor_role = _require_org_admin(request.user, org_id)
+        member = get_object_or_404(
+            OrganizationMember.objects.select_related("user"),
+            id=member_id,
+            organization=org,
+        )
+
+        new_role = str(request.data.get("role", member.role))
+        if new_role not in _ROLE_RANK:
+            return Response(
+                {"error": f"Invalid role '{new_role}'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if (member.role == "owner" or new_role == "owner") and actor_role != "owner":
+            raise PermissionDenied("Only an organization owner can modify owner memberships.")
+
+        if member.role == "owner" and new_role != "owner":
+            owner_count = OrganizationMember.objects.filter(organization=org, role="owner").count()
+            if owner_count <= 1:
+                return Response(
+                    {"error": "Cannot demote the last owner of an organization."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        member.role = new_role
+        member.save(update_fields=["role"])
+        _record_audit(
+            request,
+            action="permission_changed",
+            resource_type="OrganizationMember",
+            resource_id=str(member.id),
+            organization=org,
+            metadata={"new_role": new_role},
+        )
+        return Response(OrganizationMemberSerializer(member).data)
+
+    @transaction.atomic
+    def delete(self, request: Request, org_id: str, member_id: str) -> Response:
+        org, actor_role = _require_org_admin(request.user, org_id)
+        member = get_object_or_404(OrganizationMember, id=member_id, organization=org)
+
+        if member.role == "owner" and actor_role != "owner":
+            raise PermissionDenied("Only an organization owner can remove another owner.")
+
+        if member.role == "owner":
+            owner_count = OrganizationMember.objects.filter(organization=org, role="owner").count()
+            if owner_count <= 1:
+                return Response(
+                    {"error": "Cannot remove the last owner of an organization."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        removed_id = str(member.id)
+        member.delete()
+        _record_audit(
+            request,
+            action="deleted",
+            resource_type="OrganizationMember",
+            resource_id=removed_id,
+            organization=org,
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class OrganizationAuditLogListView(APIView):
+    """Paginated, filterable security audit trail for organization admins/owners."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = AuditLogSerializer
+
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        qs = AuditLog.objects.filter(organization=org).select_related("user")
+
+        action_filter = request.query_params.get("action", "").strip()
+        if action_filter:
+            qs = qs.filter(action=action_filter)
+
+        resource_filter = request.query_params.get("resource_type", "").strip()
+        if resource_filter:
+            qs = qs.filter(resource_type=resource_filter)
+
+        paginator = StandardResultsSetPagination()
+        page = paginator.paginate_queryset(qs, request, view=self)
+        serializer = AuditLogSerializer(page, many=True)
+        return paginator.get_paginated_response(serializer.data)
+
+
+class OrganizationUsageView(APIView):
+    """Real-time tenant plan quota and OpenAI token/cost FinOps telemetry."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationSerializer
+
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _get_org_and_role(request.user, org_id)
+        seat_used = org.members.count()
+        tasks_used = org.tasks.filter(is_active=True).count()
+        ai_usage = get_org_ai_usage(str(org.id))
+
+        return Response(
+            {
+                "organization_id": str(org.id),
+                "plan": org.plan,
+                "quotas": {
+                    "users": {"used": seat_used, "limit": org.max_users},
+                    "tasks": {"used": tasks_used, "limit": org.max_tasks},
+                    "ai_requests_daily": {
+                        "used": ai_usage["requests_daily"],
+                        "limit": org.max_ai_requests,
+                    },
+                },
+                "ai_telemetry": {
+                    "requests_total": ai_usage["requests_total"],
+                    "prompt_tokens_total": ai_usage["prompt_tokens"],
+                    "completion_tokens_total": ai_usage["completion_tokens"],
+                    "estimated_cost_usd": ai_usage["estimated_cost_usd"],
+                },
+            }
+        )
+
+
+class OrganizationAPIKeyListCreateView(APIView):
+    """List or mint SHA-256-hashed scoped M2M API keys for an organization."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationAPIKeySerializer
+
+    @extend_schema(responses=OrganizationAPIKeySerializer(many=True))
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        keys = org.api_keys.all()
+        return Response(OrganizationAPIKeySerializer(keys, many=True).data)
+
+    @transaction.atomic
+    def post(self, request: Request, org_id: str) -> Response:
+        org, actor_role = _require_org_admin(request.user, org_id)
+        serializer = OrganizationAPIKeyCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        requested_role = str(serializer.validated_data["role"])
+        if _ROLE_RANK[requested_role] > _ROLE_RANK[actor_role]:
+            raise PermissionDenied("API key role cannot exceed the creator's role.")
+
+        key_obj, raw_key = OrganizationAPIKey.create_with_raw_key(
+            organization=org,
+            created_by=request.user,
+            name=str(serializer.validated_data["name"]),
+            role=requested_role,
+            scopes=list(serializer.validated_data["scopes"]),
+            expires_at=serializer.validated_data["expires_at"],
+        )
+        _record_audit(
+            request,
+            action="api_key_created",
+            resource_type="OrganizationAPIKey",
+            resource_id=str(key_obj.id),
+            organization=org,
+            metadata={"prefix": key_obj.prefix, "role": key_obj.role, "scopes": key_obj.scopes},
+        )
+        payload = dict(OrganizationAPIKeySerializer(key_obj).data)
+        payload["api_key"] = raw_key
+        return Response(payload, status=status.HTTP_201_CREATED)
+
+
+class OrganizationAPIKeyDetailView(APIView):
+    """Revoke an organization API key immediately."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationAPIKeySerializer
+
+    @transaction.atomic
+    def delete(self, request: Request, org_id: str, key_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        key_obj = get_object_or_404(OrganizationAPIKey, id=key_id, organization=org)
+        if key_obj.revoked_at is None:
+            key_obj.revoked_at = timezone.now()
+            key_obj.save(update_fields=["revoked_at"])
+            _record_audit(
+                request,
+                action="api_key_revoked",
+                resource_type="OrganizationAPIKey",
+                resource_id=str(key_obj.id),
+                organization=org,
+                metadata={"prefix": key_obj.prefix},
+            )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class OrganizationWebhookListCreateView(APIView):
+    """List or register SSRF-validated, HMAC-SHA256-signed webhook endpoints."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = WebhookEndpointSerializer
+
+    @extend_schema(responses=WebhookEndpointSerializer(many=True))
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        endpoints = org.webhooks.all()
+        return Response(WebhookEndpointSerializer(endpoints, many=True).data)
+
+    @transaction.atomic
+    def post(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        serializer = WebhookEndpointCreateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        signing_secret = f"whsec_{secrets.token_hex(24)}"
+        endpoint = WebhookEndpoint.objects.create(
+            organization=org,
+            created_by=request.user,
+            url=str(serializer.validated_data["url"]),
+            description=str(serializer.validated_data["description"]),
+            secret=signing_secret,
+            events=list(serializer.validated_data["events"]),
+        )
+        _record_audit(
+            request,
+            action="webhook_created",
+            resource_type="WebhookEndpoint",
+            resource_id=str(endpoint.id),
+            organization=org,
+            metadata={"url": endpoint.url, "events": endpoint.events},
+        )
+        data = dict(WebhookEndpointSerializer(endpoint).data)
+        # Signing secret is revealed once upon creation
+        data["signing_secret"] = signing_secret
+        return Response(data, status=status.HTTP_201_CREATED)
+
+
+class OrganizationWebhookDetailView(APIView):
+    """Delete a webhook endpoint."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = WebhookEndpointSerializer
+
+    @transaction.atomic
+    def delete(self, request: Request, org_id: str, webhook_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        endpoint = get_object_or_404(WebhookEndpoint, id=webhook_id, organization=org)
+        ep_id = str(endpoint.id)
+        endpoint.delete()
+        _record_audit(
+            request,
+            action="webhook_deleted",
+            resource_type="WebhookEndpoint",
+            resource_id=ep_id,
+            organization=org,
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class OrganizationWebhookTestView(APIView):
+    """Send a signed ``webhook.ping`` test event and return the delivery record."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = WebhookDeliverySerializer
+
+    def post(self, request: Request, org_id: str, webhook_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        endpoint = get_object_or_404(WebhookEndpoint, id=webhook_id, organization=org)
+        delivery = deliver_webhook_sync(
+            endpoint,
+            "webhook.ping",
+            {"message": "Test ping from Multilingual Task API", "organization_id": str(org.id)},
+        )
+        return Response(WebhookDeliverySerializer(delivery).data, status=status.HTTP_200_OK)
+
+
+class ExplorerConsoleView(View):
+    """Serve the interactive API & live WebSocket operations console with a strict CSP nonce."""
+
+    def get(self, request: HttpRequest) -> HttpResponse:
+        nonce = secrets.token_urlsafe(24)
+        setattr(request, "_csp_nonce", nonce)
+        html_path: Path = settings.BASE_DIR / "docs" / "api-explorer.html"
+        raw_html = html_path.read_text(encoding="utf-8")
+        rendered = raw_html.replace("<style>", f'<style nonce="{nonce}">', 1).replace(
+            "<script>", f'<script nonce="{nonce}">', 1
+        )
+        return HttpResponse(rendered, content_type="text/html; charset=utf-8")

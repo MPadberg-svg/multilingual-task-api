@@ -1,8 +1,9 @@
-"""Serializers for the Task API.
+"""Serializers for the Task API and RLHF annotation workflow.
 
 Provides a multilingual ``TaskSerializer`` that supports writable
 ``translations`` (and optional top-level ``title`` / ``description`` in the
-active request language) while validating and sanitizing all inputs.
+active request language) while validating and sanitizing all inputs, plus
+structured RLHF annotation, task-claim, and adjudication serializers.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from django.db import transaction
 from rest_framework import serializers
 
 from apps.core.security import InputValidator
-from apps.tasks.models import Task
+from apps.tasks.models import Task, TaskAnnotation
 
 
 def _supported_languages() -> set[str]:
@@ -39,13 +40,7 @@ class TaskTranslationPayloadSerializer(serializers.Serializer):
 
 
 class TaskSerializer(serializers.ModelSerializer):
-    """Serializer for multilingual Task instances.
-
-    Supports writing translations either via a nested ``translations`` mapping
-    (``{"en": {"title": "...", "description": "..."}, "es": {...}}``) or via
-    convenience top-level ``title`` / ``description`` fields scoped to the
-    resolved request language.
-    """
+    """Serializer for multilingual Task instances and RLHF leasing/consensus state."""
 
     translations = serializers.DictField(
         child=TaskTranslationPayloadSerializer(),
@@ -61,11 +56,13 @@ class TaskSerializer(serializers.ModelSerializer):
         required=False,
         allow_blank=True,
     )
+    auto_translate = serializers.BooleanField(write_only=True, required=False, default=False)
     language = serializers.SerializerMethodField()
     status_display = serializers.CharField(
         source="get_status_display",
         read_only=True,
     )
+    annotation_count = serializers.SerializerMethodField()
 
     class Meta:
         model = Task
@@ -77,13 +74,32 @@ class TaskSerializer(serializers.ModelSerializer):
             "language",
             "status",
             "status_display",
+            "priority",
+            "required_annotations",
+            "claimed_by",
+            "claimed_until",
+            "consensus_score",
+            "consensus_choice",
+            "annotation_count",
+            "auto_translate",
             "is_active",
             "organization",
             "created_at",
             "updated_at",
             "user",
         ]
-        read_only_fields = ["id", "user", "organization", "created_at", "updated_at"]
+        read_only_fields = [
+            "id",
+            "user",
+            "organization",
+            "claimed_by",
+            "claimed_until",
+            "consensus_score",
+            "consensus_choice",
+            "annotation_count",
+            "created_at",
+            "updated_at",
+        ]
 
     def _active_language(self) -> str:
         request = self.context.get("request")
@@ -94,6 +110,15 @@ class TaskSerializer(serializers.ModelSerializer):
         """Return the resolved language for the current request."""
         return self._active_language()
 
+    def get_annotation_count(self, obj: Task) -> int:
+        annotated = getattr(obj, "annotation_count_val", None)
+        if isinstance(annotated, int):
+            return annotated
+        prefetched = getattr(obj, "_prefetched_objects_cache", {})
+        if "annotations" in prefetched:
+            return len(prefetched["annotations"])
+        return int(obj.annotations.count())
+
     @staticmethod
     def _clean_text(value: str, field_label: str, max_length: int) -> str:
         is_dangerous, reason = InputValidator.detect_injection(value)
@@ -103,6 +128,11 @@ class TaskSerializer(serializers.ModelSerializer):
             return InputValidator.sanitize_string(value, max_length=max_length)
         except ValueError as exc:
             raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_required_annotations(self, value: int) -> int:
+        if value < 1 or value > 25:
+            raise serializers.ValidationError("required_annotations must be between 1 and 25.")
+        return value
 
     def validate_translations(self, value: dict[str, dict[str, Any]]) -> dict[str, dict[str, str]]:
         """Validate language codes and sanitize translated title/description text."""
@@ -170,7 +200,6 @@ class TaskSerializer(serializers.ModelSerializer):
             translations_data[active_lang] = merged_entry
 
         if self.instance is None:
-            # Creating a new task requires at least one non-empty title
             has_any_title = any(
                 bool(entry.get("title", "").strip()) for entry in translations_data.values()
             )
@@ -183,7 +212,6 @@ class TaskSerializer(serializers.ModelSerializer):
                     }
                 )
         else:
-            # For new language rows added during update, ensure title is present if row didn't exist
             existing_langs = {t.language_code for t in self.instance.translations.all()}
             for lang_code, entry in translations_data.items():
                 if lang_code not in existing_langs and not entry.get("title", "").strip():
@@ -199,7 +227,7 @@ class TaskSerializer(serializers.ModelSerializer):
         return attrs
 
     def to_representation(self, instance: Task) -> dict[str, Any]:
-        """Serialize Task with resolved language fields and full translations dictionary."""
+        """Serialize Task with resolved language fields, translations, and RLHF metadata."""
         lang = self._active_language()
         translations_out: dict[str, dict[str, str]] = {}
         for trans in instance.translations.all():
@@ -215,6 +243,7 @@ class TaskSerializer(serializers.ModelSerializer):
             instance.safe_translation_getter("description", language_code=lang, any_language=True)
             or ""
         )
+        dt_field = serializers.DateTimeField()
 
         return {
             "id": str(instance.id),
@@ -224,16 +253,28 @@ class TaskSerializer(serializers.ModelSerializer):
             "language": lang,
             "status": instance.status,
             "status_display": instance.get_status_display(),
+            "priority": instance.priority,
+            "required_annotations": instance.required_annotations,
+            "claimed_by": str(instance.claimed_by_id) if instance.claimed_by_id else None,
+            "claimed_until": (
+                dt_field.to_representation(instance.claimed_until)
+                if instance.claimed_until
+                else None
+            ),
+            "consensus_score": instance.consensus_score,
+            "consensus_choice": instance.consensus_choice,
+            "annotation_count": self.get_annotation_count(instance),
             "is_active": instance.is_active,
             "organization": str(instance.organization_id) if instance.organization_id else None,
-            "created_at": serializers.DateTimeField().to_representation(instance.created_at),
-            "updated_at": serializers.DateTimeField().to_representation(instance.updated_at),
+            "created_at": dt_field.to_representation(instance.created_at),
+            "updated_at": dt_field.to_representation(instance.updated_at),
             "user": instance.user_id,
         }
 
     @transaction.atomic
     def create(self, validated_data: dict[str, Any]) -> Task:
         """Create a new Task and persist all provided translations atomically."""
+        auto_translate = bool(validated_data.pop("auto_translate", False))
         translations_data: dict[str, dict[str, str]] = validated_data.pop("translations", {})
         task = Task.objects.create(**validated_data)
 
@@ -243,11 +284,13 @@ class TaskSerializer(serializers.ModelSerializer):
             task.description = trans_data.get("description", "")
             task.save()
 
+        setattr(task, "_auto_translate_requested", auto_translate)
         return task
 
     @transaction.atomic
     def update(self, instance: Task, validated_data: dict[str, Any]) -> Task:
         """Update an existing Task and any provided language translations atomically."""
+        validated_data.pop("auto_translate", None)
         translations_data: dict[str, dict[str, str]] = validated_data.pop("translations", {})
 
         model_fields_changed = False
@@ -277,3 +320,152 @@ class TaskSerializer(serializers.ModelSerializer):
             instance.save()
 
         return instance
+
+
+class TaskAnnotationSerializer(serializers.ModelSerializer):
+    """Serializer for structured RLHF preference and rubric annotations."""
+
+    annotator_email = serializers.EmailField(source="annotator.email", read_only=True)
+    preference = serializers.CharField(required=False)
+    preference_choice = serializers.CharField(write_only=True, required=False)
+    overall_score = serializers.IntegerField(
+        write_only=True, required=False, min_value=1, max_value=5
+    )
+    helpfulness_score = serializers.IntegerField(
+        write_only=True, required=False, min_value=1, max_value=5
+    )
+    harmlessness_score = serializers.IntegerField(
+        write_only=True, required=False, min_value=1, max_value=5
+    )
+    honesty_score = serializers.IntegerField(
+        write_only=True, required=False, min_value=1, max_value=5
+    )
+    duration_ms = serializers.IntegerField(write_only=True, required=False, min_value=0)
+    language = serializers.CharField(write_only=True, required=False, max_length=10)
+
+    class Meta:
+        model = TaskAnnotation
+        fields = [
+            "id",
+            "task",
+            "annotator",
+            "annotator_email",
+            "preference",
+            "preference_choice",
+            "rubric_scores",
+            "overall_score",
+            "helpfulness_score",
+            "harmlessness_score",
+            "honesty_score",
+            "rationale",
+            "response_a",
+            "response_b",
+            "duration_seconds",
+            "duration_ms",
+            "language",
+            "created_at",
+        ]
+        read_only_fields = ["id", "task", "annotator", "annotator_email", "created_at"]
+
+    def _clean_text(self, value: str, field_name: str, max_length: int) -> str:
+        if not value:
+            return ""
+        is_bad, reason = InputValidator.detect_injection(value)
+        if is_bad:
+            raise serializers.ValidationError(f"Invalid {field_name}: {reason}")
+        try:
+            return InputValidator.sanitize_string(value, max_length=max_length)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc)) from exc
+
+    def validate_rationale(self, value: str) -> str:
+        return self._clean_text(value, "rationale", max_length=5000)
+
+    def validate_response_a(self, value: str) -> str:
+        return self._clean_text(value, "response_a", max_length=10000)
+
+    def validate_response_b(self, value: str) -> str:
+        return self._clean_text(value, "response_b", max_length=10000)
+
+    def validate_rubric_scores(self, value: Any) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            raise serializers.ValidationError("rubric_scores must be a JSON object.")
+        for k, v in value.items():
+            if k == "language":
+                continue
+            if not isinstance(v, int) or v < 1 or v > 5:
+                raise serializers.ValidationError(
+                    f"Rubric score '{k}' must be an integer between 1 and 5."
+                )
+        return dict(value)
+
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        alias_map = {
+            "a": "response_a",
+            "b": "response_b",
+            "response_a": "response_a",
+            "response_b": "response_b",
+            "tie": "tie",
+        }
+        raw_pref = attrs.pop("preference_choice", None) or attrs.get("preference")
+        if not raw_pref or str(raw_pref).lower() not in alias_map:
+            raise serializers.ValidationError(
+                {"preference": "Must be one of 'response_a', 'response_b', or 'tie'."}
+            )
+        attrs["preference"] = alias_map[str(raw_pref).lower()]
+
+        scores = dict(attrs.get("rubric_scores") or {})
+        for field_key, score_key in (
+            ("overall_score", "overall"),
+            ("helpfulness_score", "helpfulness"),
+            ("harmlessness_score", "harmlessness"),
+            ("honesty_score", "honesty"),
+        ):
+            val = attrs.pop(field_key, None)
+            if val is not None:
+                scores[score_key] = int(val)
+
+        lang = attrs.pop("language", None)
+        if lang:
+            scores["language"] = str(lang)[:10]
+        attrs["rubric_scores"] = scores
+
+        dur_ms = attrs.pop("duration_ms", None)
+        if dur_ms is not None and "duration_seconds" not in attrs:
+            attrs["duration_seconds"] = max(0, int(dur_ms) // 1000)
+
+        return attrs
+
+
+class TaskAdjudicateSerializer(serializers.Serializer):
+    """Payload for ``POST /api/v1/tasks/{id}/adjudicate/``."""
+
+    consensus_choice = serializers.ChoiceField(
+        choices=["response_a", "response_b", "tie", "a", "b"]
+    )
+    rationale = serializers.CharField(max_length=2000, required=False, allow_blank=True, default="")
+
+    def validate_consensus_choice(self, value: str) -> str:
+        return {"a": "response_a", "b": "response_b"}.get(value, value)
+
+    def validate_rationale(self, value: str) -> str:
+        if not value:
+            return ""
+        is_bad, reason = InputValidator.detect_injection(value)
+        if is_bad:
+            raise serializers.ValidationError(f"Invalid rationale: {reason}")
+        return InputValidator.sanitize_string(value, max_length=2000)
+
+
+class TaskClaimRequestSerializer(serializers.Serializer):
+    """Optional lease configuration for ``POST /api/v1/tasks/claim/``."""
+
+    lease_seconds = serializers.IntegerField(
+        required=False, default=900, min_value=60, max_value=7200
+    )
+    priority = serializers.ChoiceField(
+        choices=["low", "medium", "high", "critical"],
+        required=False,
+        allow_null=True,
+        default=None,
+    )

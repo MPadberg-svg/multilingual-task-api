@@ -25,6 +25,22 @@ from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from strawberry.django.views import AsyncGraphQLView
 
 from apps.core.graphql.schema import schema as graphql_schema
+from apps.core.tenant_views import (
+    CurrentUserView,
+    ExplorerConsoleView,
+    LogoutView,
+    OrganizationAPIKeyDetailView,
+    OrganizationAPIKeyListCreateView,
+    OrganizationAuditLogListView,
+    OrganizationDetailView,
+    OrganizationListCreateView,
+    OrganizationMemberDetailView,
+    OrganizationMemberListCreateView,
+    OrganizationUsageView,
+    OrganizationWebhookDetailView,
+    OrganizationWebhookListCreateView,
+    OrganizationWebhookTestView,
+)
 
 urlpatterns = [
     # Django Admin
@@ -45,6 +61,66 @@ urlpatterns = [
         TokenVerifyView.as_view(),
         name="token_verify",
     ),
+    path("api/v1/auth/me/", CurrentUserView.as_view(), name="auth-me"),
+    path("api/v1/auth/logout/", LogoutView.as_view(), name="auth-logout"),
+    # Multi-tenant Organizations, RBAC, Audit Logs, FinOps Usage, API Keys & Webhooks
+    path(
+        "api/v1/organizations/",
+        OrganizationListCreateView.as_view(),
+        name="organization-list",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/",
+        OrganizationDetailView.as_view(),
+        name="organization-detail",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/members/",
+        OrganizationMemberListCreateView.as_view(),
+        name="organization-members",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/members/<uuid:member_id>/",
+        OrganizationMemberDetailView.as_view(),
+        name="organization-member-detail",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/audit-logs/",
+        OrganizationAuditLogListView.as_view(),
+        name="organization-audit-logs",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/usage/",
+        OrganizationUsageView.as_view(),
+        name="organization-usage",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/api-keys/",
+        OrganizationAPIKeyListCreateView.as_view(),
+        name="organization-api-keys",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/api-keys/<uuid:key_id>/",
+        OrganizationAPIKeyDetailView.as_view(),
+        name="organization-api-key-detail",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/webhooks/",
+        OrganizationWebhookListCreateView.as_view(),
+        name="organization-webhooks",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/webhooks/<uuid:webhook_id>/",
+        OrganizationWebhookDetailView.as_view(),
+        name="organization-webhook-detail",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/webhooks/<uuid:webhook_id>/test/",
+        OrganizationWebhookTestView.as_view(),
+        name="organization-webhook-test",
+    ),
+    # Interactive CSP-nonce-hardened API & WebSocket Operations Console
+    path("explorer/", ExplorerConsoleView.as_view(), name="api-explorer"),
     # Application APIs
     path("api/v1/tasks/", include("apps.tasks.urls")),
     path("api/v1/ai/", include("apps.ai_assist.urls")),

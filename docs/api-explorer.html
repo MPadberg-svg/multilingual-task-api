@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Multilingual Task API Explorer</title>
+<title>Multilingual Task API — RLHF Operations Console</title>
 <style>
   :root {
     --bg: #0f172a;
@@ -18,7 +18,7 @@
     --danger: #ef4444;
     --border: #334155;
     --radius: 12px;
-    --shadow: 0 4px 6px -1px rgba(0,0,0,0.3);
+    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -39,22 +39,14 @@
     gap: 1rem;
   }
   h1 {
-    font-size: 1.5rem;
+    font-size: 1.45rem;
     font-weight: 700;
     background: linear-gradient(90deg, var(--accent), var(--accent-2));
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
   }
-  .toolbar {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    flex-wrap: wrap;
-  }
-  .lang-switcher, .mode-switcher {
-    display: flex;
-    gap: 0.4rem;
-  }
+  .toolbar { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+  .lang-switcher, .mode-switcher { display: flex; gap: 0.4rem; }
   .pill-btn {
     padding: 0.45rem 0.9rem;
     border: 1px solid var(--border);
@@ -72,7 +64,7 @@
     border-color: var(--accent);
   }
   .auth-bar {
-    max-width: 1200px;
+    max-width: 1240px;
     margin: 1.5rem auto 0;
     padding: 0 1.5rem;
     display: none;
@@ -84,12 +76,12 @@
     border-radius: var(--radius);
     padding: 1rem 1.25rem;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
     gap: 0.75rem;
     align-items: end;
   }
   main {
-    max-width: 1200px;
+    max-width: 1240px;
     margin: 0 auto;
     padding: 1.5rem;
     display: grid;
@@ -103,12 +95,7 @@
     padding: 1.5rem;
     box-shadow: var(--shadow);
   }
-  .card-header {
-    display: flex;
-    align-items: center;
-    gap: 0.75rem;
-    margin-bottom: 0.75rem;
-  }
+  .card-header { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.75rem; }
   .method {
     padding: 0.25rem 0.65rem;
     border-radius: 6px;
@@ -118,124 +105,120 @@
   }
   .method.get { background: var(--success); color: #fff; }
   .method.post { background: var(--accent); color: #0f172a; }
-  .endpoint {
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.85rem;
-    color: var(--accent);
-  }
-  label {
-    display: block;
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    margin-bottom: 0.25rem;
-  }
-  textarea, input {
+  .method.ws { background: var(--accent-2); color: #0f172a; }
+  .endpoint { font-family: monospace; font-size: 0.9rem; color: var(--text); }
+  label { display: block; font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.25rem; }
+  input, textarea, select {
     width: 100%;
-    padding: 0.65rem 0.75rem;
+    padding: 0.6rem 0.75rem;
     background: var(--bg);
     border: 1px solid var(--border);
     border-radius: 8px;
     color: var(--text);
-    font-family: inherit;
-    font-size: 0.85rem;
+    font-size: 0.88rem;
   }
-  textarea { margin-top: 0.75rem; resize: vertical; }
-  textarea:focus, input:focus {
-    outline: 2px solid var(--accent);
-    border-color: transparent;
-  }
+  textarea { margin-top: 0.5rem; resize: vertical; }
+  .mt-3 { margin-top: 0.75rem; }
+  .row-inline { display: flex; gap: 0.5rem; align-items: center; margin-top: 0.6rem; }
+  .row-inline input[type="checkbox"] { width: auto; }
   .btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.5rem;
-    padding: 0.65rem 1.25rem;
+    margin-top: 0.75rem;
+    padding: 0.6rem 1.1rem;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+    color: #0f172a;
     border: none;
     border-radius: 8px;
-    background: linear-gradient(135deg, var(--accent), var(--accent-2));
-    color: #fff;
+    font-weight: 700;
+    cursor: pointer;
+    font-size: 0.86rem;
+  }
+  .btn-secondary {
+    margin-top: 0.75rem;
+    padding: 0.6rem 1rem;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
     font-weight: 600;
     cursor: pointer;
-    margin-top: 0.75rem;
+    font-size: 0.84rem;
   }
-  .btn:disabled { opacity: 0.6; cursor: not-allowed; }
   .status-badge {
     display: inline-block;
     margin-top: 0.65rem;
-    padding: 0.2rem 0.65rem;
-    border-radius: 999px;
+    padding: 0.2rem 0.55rem;
+    border-radius: 6px;
     font-size: 0.75rem;
-    font-weight: 600;
+    font-weight: 700;
   }
-  .status-badge.ok { background: rgba(34,197,94,0.16); color: var(--success); }
-  .status-badge.err { background: rgba(239,68,68,0.16); color: var(--danger); }
-  .response {
+  .status-badge.ok { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+  .status-badge.err { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+  .hidden { display: none; }
+  pre.response {
     margin-top: 0.75rem;
-    background: var(--bg);
+    padding: 0.85rem;
+    background: #090e1a;
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 0.9rem;
-    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.78rem;
     overflow-x: auto;
-    white-space: pre-wrap;
+    max-height: 240px;
     display: none;
   }
-  .response.visible { display: block; }
+  pre.response.visible { display: block; }
   .score-bar {
-    height: 8px;
-    background: var(--surface-2);
-    border-radius: 4px;
     margin-top: 0.75rem;
+    height: 8px;
+    background: var(--bg);
+    border-radius: 999px;
     overflow: hidden;
   }
   .score-fill {
     height: 100%;
-    width: 0;
-    background: linear-gradient(90deg, var(--success), var(--accent));
-    transition: width 0.5s ease-out;
+    width: 0%;
+    background: linear-gradient(90deg, var(--warning), var(--success));
+    transition: width 0.3s ease;
   }
-  .improvements { margin-top: 0.75rem; list-style: none; font-size: 0.85rem; }
-  .improvements li { padding: 0.35rem 0; border-bottom: 1px solid var(--border); }
-  @media (max-width: 768px) {
-    main { grid-template-columns: 1fr; }
-    header { flex-direction: column; align-items: flex-start; }
-  }
+  ul.improvements { margin-top: 0.5rem; padding-left: 1.2rem; font-size: 0.82rem; color: var(--text-muted); }
 </style>
 </head>
 <body>
 <header>
-  <h1 id="page-title">Multilingual Task API Explorer</h1>
+  <h1 id="page-title">Multilingual Task API — RLHF Operations Console</h1>
   <div class="toolbar">
-    <div class="mode-switcher" role="group" aria-label="Execution Mode">
-      <button class="pill-btn active" id="mode-demo" type="button">Demo Mode</button>
+    <div class="mode-switcher">
+      <button class="pill-btn active" id="mode-mock" type="button">Mock Demo</button>
       <button class="pill-btn" id="mode-live" type="button">Live API</button>
     </div>
-    <div class="lang-switcher" role="group" aria-label="Language">
-      <button class="pill-btn lang-btn active" data-lang="en" type="button">EN</button>
-      <button class="pill-btn lang-btn" data-lang="es" type="button">ES</button>
-      <button class="pill-btn lang-btn" data-lang="fr" type="button">FR</button>
+    <div class="lang-switcher">
+      <button class="pill-btn active" data-lang="en" type="button">EN</button>
+      <button class="pill-btn" data-lang="es" type="button">ES</button>
+      <button class="pill-btn" data-lang="fr" type="button">FR</button>
     </div>
   </div>
 </header>
 
-<section class="auth-bar" id="auth-bar" aria-label="Live API Authentication">
+<section class="auth-bar" id="auth-bar">
   <div class="auth-grid">
     <div>
-      <label for="auth-email">Email</label>
-      <input id="auth-email" type="email" placeholder="demo0@example.com" autocomplete="username">
+      <label for="auth-email">JWT Email</label>
+      <input id="auth-email" type="email" placeholder="annotator@org.ai">
     </div>
     <div>
-      <label for="auth-password">Password</label>
-      <input id="auth-password" type="password" placeholder="••••••••" autocomplete="current-password">
+      <label for="auth-pass">Password</label>
+      <input id="auth-pass" type="password" placeholder="••••••••">
     </div>
     <div>
-      <label for="auth-org">X-Organization-ID (optional UUID)</label>
-      <input id="auth-org" type="text" placeholder="Optional tenant UUID">
+      <label for="auth-apikey">Or M2M X-API-Key</label>
+      <input id="auth-apikey" type="password" placeholder="mlk_live_...">
     </div>
     <div>
-      <button class="btn" id="btn-login" type="button" style="margin-top:0;width:100%;">Authenticate JWT</button>
-      <div id="auth-status" class="status-badge ok" style="display:none;"></div>
+      <label for="auth-org">X-Organization-ID (optional)</label>
+      <input id="auth-org" type="text" placeholder="UUID">
+    </div>
+    <div>
+      <button class="btn" id="btn-login" type="button">Authenticate JWT</button>
+      <div id="badge-auth" class="status-badge ok hidden"></div>
     </div>
   </div>
 </section>
@@ -248,7 +231,8 @@
     </div>
     <p id="list-desc">List paginated tasks with language-scoped Redis caching</p>
     <button class="btn" id="btn-list" type="button">Send Request</button>
-    <div id="badge-list" class="status-badge ok" style="display:none;"></div>
+    <button class="btn-secondary" id="btn-export" type="button">Export JSONL</button>
+    <div id="badge-list" class="status-badge ok hidden"></div>
     <pre class="response" id="resp-list" aria-live="polite"></pre>
   </div>
 
@@ -257,12 +241,27 @@
       <span class="method post">POST</span>
       <span class="endpoint">/api/v1/tasks/</span>
     </div>
-    <p id="create-desc">Create a multilingual task in the active language</p>
-    <input id="task-title" type="text" placeholder="Task title..." style="margin-top:0.75rem;">
+    <p id="create-desc">Create an RLHF task with optional async OpenAI auto-translation</p>
+    <input id="task-title" class="mt-3" type="text" placeholder="Task title...">
     <textarea id="task-desc" rows="2" placeholder="Task description..."></textarea>
+    <div class="row-inline">
+      <input id="task-autotranslate" type="checkbox">
+      <label for="task-autotranslate">Auto-translate EN / ES / FR asynchronously</label>
+    </div>
     <button class="btn" id="btn-create" type="button">Create Task</button>
-    <div id="badge-create" class="status-badge ok" style="display:none;"></div>
+    <div id="badge-create" class="status-badge ok hidden"></div>
     <pre class="response" id="resp-create" aria-live="polite"></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="method post">POST</span>
+      <span class="endpoint">/api/v1/tasks/claim/</span>
+    </div>
+    <p id="claim-desc">Atomically lease the highest-priority unannotated RLHF task</p>
+    <button class="btn" id="btn-claim" type="button">Claim Next Task</button>
+    <div id="badge-claim" class="status-badge ok hidden"></div>
+    <pre class="response" id="resp-claim" aria-live="polite"></pre>
   </div>
 
   <div class="card">
@@ -273,7 +272,7 @@
     <p id="ai-desc">Generate formal EN / ES / FR translations via OpenAI</p>
     <textarea id="ai-input" rows="3" placeholder="Enter task description..."></textarea>
     <button class="btn" id="btn-ai" type="button">Generate</button>
-    <div id="badge-ai" class="status-badge ok" style="display:none;"></div>
+    <div id="badge-ai" class="status-badge ok hidden"></div>
     <pre class="response" id="resp-ai" aria-live="polite"></pre>
   </div>
 
@@ -283,50 +282,68 @@
       <span class="endpoint">/api/v1/ai/evaluate-quality/</span>
     </div>
     <p id="eval-desc">Evaluate prompt clarity, constraints, and edge cases</p>
-    <input id="eval-input" type="text" placeholder="Enter prompt text..." style="margin-top:0.75rem;">
+    <input id="eval-input" class="mt-3" type="text" placeholder="Enter prompt text...">
     <button class="btn" id="btn-eval" type="button">Evaluate</button>
     <div class="score-bar"><div class="score-fill" id="score-fill"></div></div>
     <ul class="improvements" id="improvements"></ul>
-    <div id="badge-eval" class="status-badge ok" style="display:none;"></div>
+    <div id="badge-eval" class="status-badge ok hidden"></div>
     <pre class="response" id="resp-eval" aria-live="polite"></pre>
+  </div>
+
+  <div class="card">
+    <div class="card-header">
+      <span class="method ws">WS</span>
+      <span class="endpoint">/ws/tasks/</span>
+    </div>
+    <p id="ws-desc">Live real-time task &amp; translation stream (first-message JWT auth)</p>
+    <button class="btn" id="btn-ws-connect" type="button">Connect Stream</button>
+    <button class="btn-secondary" id="btn-ws-disconnect" type="button">Disconnect</button>
+    <div id="badge-ws" class="status-badge ok hidden"></div>
+    <pre class="response" id="resp-ws" aria-live="polite"></pre>
   </div>
 </main>
 
 <script>
   const i18n = {
     en: {
-      title: "Multilingual Task API Explorer",
+      title: "Multilingual Task API — RLHF Operations Console",
       listDesc: "List paginated tasks with language-scoped Redis caching",
-      createDesc: "Create a multilingual task in the active language",
+      createDesc: "Create an RLHF task with optional async OpenAI auto-translation",
+      claimDesc: "Atomically lease the highest-priority unannotated RLHF task",
       aiDesc: "Generate formal EN / ES / FR translations via OpenAI",
       evalDesc: "Evaluate prompt clarity, constraints, and edge cases",
+      wsDesc: "Live real-time task & translation stream (first-message JWT auth)",
       mockTasks: [
-        {id: "a1b2c3d4", title: "Review dataset annotations", status: "pending", language: "en"},
-        {id: "e5f6g7h8", title: "Audit RLHF safety rubrics", status: "in_progress", language: "en"}
+        {id: "a1b2c3d4", title: "Review dataset annotations", status: "pending", priority: "high", language: "en"},
+        {id: "e5f6g7h8", title: "Audit RLHF safety rubrics", status: "in_progress", priority: "critical", language: "en"}
       ],
       improvements: ["Specify output JSON constraints", "Define edge-case handling rules"]
     },
     es: {
-      title: "Explorador de API de Tareas Multilingües",
+      title: "Consola de Operaciones RLHF — API de Tareas Multilingües",
       listDesc: "Listar tareas paginadas con caché Redis por idioma",
-      createDesc: "Crear una tarea multilingüe en el idioma activo",
+      createDesc: "Crear una tarea RLHF con traducción automática asíncrona",
+      claimDesc: "Arrendar atómicamente la siguiente tarea RLHF prioritaria",
       aiDesc: "Generar traducciones formales EN / ES / FR con OpenAI",
       evalDesc: "Evaluar claridad, restricciones y casos límite del prompt",
+      wsDesc: "Flujo WebSocket en tiempo real (autenticación JWT segura)",
       mockTasks: [
-        {id: "a1b2c3d4", title: "Revisar anotaciones del dataset", status: "pending", language: "es"},
-        {id: "e5f6g7h8", title: "Auditar rúbricas de seguridad RLHF", status: "in_progress", language: "es"}
+        {id: "a1b2c3d4", title: "Revisar anotaciones del dataset", status: "pending", priority: "high", language: "es"},
+        {id: "e5f6g7h8", title: "Auditar rúbricas de seguridad RLHF", status: "in_progress", priority: "critical", language: "es"}
       ],
       improvements: ["Especificar restricciones del esquema JSON", "Definir reglas para casos límite"]
     },
     fr: {
-      title: "Explorateur API de Tâches Multilingues",
+      title: "Console d'Opérations RLHF — API de Tâches Multilingues",
       listDesc: "Lister les tâches paginées avec cache Redis par langue",
-      createDesc: "Créer une tâche multilingue dans la langue active",
+      createDesc: "Créer une tâche RLHF avec traduction automatique asynchrone",
+      claimDesc: "Réserver atomiquement la prochaine tâche RLHF prioritaire",
       aiDesc: "Générer des traductions formelles EN / ES / FR via OpenAI",
       evalDesc: "Évaluer la clarté, les contraintes et les cas limites",
+      wsDesc: "Flux WebSocket temps réel (authentification JWT sécurisée)",
       mockTasks: [
-        {id: "a1b2c3d4", title: "Revoir les annotations du dataset", status: "pending", language: "fr"},
-        {id: "e5f6g7h8", title: "Auditer les grilles de sécurité RLHF", status: "in_progress", language: "fr"}
+        {id: "a1b2c3d4", title: "Revoir les annotations du dataset", status: "pending", priority: "high", language: "fr"},
+        {id: "e5f6g7h8", title: "Auditer les grilles de sécurité RLHF", status: "in_progress", priority: "critical", language: "fr"}
       ],
       improvements: ["Spécifier les contraintes du format JSON", "Définir la gestion des cas limites"]
     }
@@ -335,14 +352,16 @@
   let currentLang = "en";
   let liveMode = false;
   let accessToken = "";
+  let taskSocket = null;
+  const wsLog = [];
 
   function showResult(respId, badgeId, ok, label, payload) {
     const pre = document.getElementById(respId);
     const badge = document.getElementById(badgeId);
-    badge.style.display = "inline-block";
+    badge.classList.remove("hidden");
     badge.className = "status-badge " + (ok ? "ok" : "err");
     badge.textContent = label;
-    pre.textContent = JSON.stringify(payload, null, 2);
+    pre.textContent = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
     pre.classList.add("visible");
   }
 
@@ -351,7 +370,10 @@
       "Content-Type": "application/json",
       "Accept-Language": currentLang
     };
-    if (accessToken) {
+    const apiKey = document.getElementById("auth-apikey").value.trim();
+    if (apiKey) {
+      headers["X-API-Key"] = apiKey;
+    } else if (accessToken) {
       headers["Authorization"] = "Bearer " + accessToken;
     }
     const orgId = document.getElementById("auth-org").value.trim();
@@ -363,39 +385,21 @@
 
   async function apiRequest(path, options, respId, badgeId) {
     try {
-      // Relative URLs ensure compatibility behind reverse proxies and cloud previews
       const res = await fetch(path, options);
       const text = await res.text();
       let data;
-      try { data = JSON.parse(text); } catch { data = {raw: text}; }
-      const timing = res.headers.get("X-Response-Time");
-      const label = "HTTP " + res.status + (timing ? " · " + timing + " ms" : "");
-      showResult(respId, badgeId, res.ok, label, data);
-      return {ok: res.ok, data};
+      try { data = text ? JSON.parse(text) : {}; } catch (_) { data = text; }
+      showResult(respId, badgeId, res.ok, "HTTP " + res.status, data);
+      return { ok: res.ok, status: res.status, data: data };
     } catch (err) {
-      showResult(respId, badgeId, false, "Network Error", {error: String(err)});
-      return {ok: false, data: null};
+      showResult(respId, badgeId, false, "Network Error", { error: String(err) });
+      return { ok: false, status: 0, data: null };
     }
   }
 
-  function setLanguage(lang) {
-    currentLang = lang;
-    document.querySelectorAll(".lang-btn").forEach(b => b.classList.toggle("active", b.dataset.lang === lang));
-    const t = i18n[lang];
-    document.getElementById("page-title").textContent = t.title;
-    document.getElementById("list-desc").textContent = t.listDesc;
-    document.getElementById("create-desc").textContent = t.createDesc;
-    document.getElementById("ai-desc").textContent = t.aiDesc;
-    document.getElementById("eval-desc").textContent = t.evalDesc;
-  }
-
-  document.querySelectorAll(".lang-btn").forEach(btn => {
-    btn.addEventListener("click", () => setLanguage(btn.dataset.lang));
-  });
-
-  document.getElementById("mode-demo").addEventListener("click", () => {
+  document.getElementById("mode-mock").addEventListener("click", () => {
     liveMode = false;
-    document.getElementById("mode-demo").classList.add("active");
+    document.getElementById("mode-mock").classList.add("active");
     document.getElementById("mode-live").classList.remove("active");
     document.getElementById("auth-bar").classList.remove("visible");
   });
@@ -403,130 +407,209 @@
   document.getElementById("mode-live").addEventListener("click", () => {
     liveMode = true;
     document.getElementById("mode-live").classList.add("active");
-    document.getElementById("mode-demo").classList.remove("active");
+    document.getElementById("mode-mock").classList.remove("active");
     document.getElementById("auth-bar").classList.add("visible");
+  });
+
+  document.querySelectorAll(".lang-switcher .pill-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".lang-switcher .pill-btn").forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentLang = btn.dataset.lang;
+      const t = i18n[currentLang];
+      document.getElementById("page-title").textContent = t.title;
+      document.getElementById("list-desc").textContent = t.listDesc;
+      document.getElementById("create-desc").textContent = t.createDesc;
+      document.getElementById("claim-desc").textContent = t.claimDesc;
+      document.getElementById("ai-desc").textContent = t.aiDesc;
+      document.getElementById("eval-desc").textContent = t.evalDesc;
+      document.getElementById("ws-desc").textContent = t.wsDesc;
+    });
   });
 
   document.getElementById("btn-login").addEventListener("click", async () => {
     const email = document.getElementById("auth-email").value.trim();
-    const password = document.getElementById("auth-password").value;
-    const statusEl = document.getElementById("auth-status");
+    const password = document.getElementById("auth-pass").value;
+    const badge = document.getElementById("badge-auth");
     try {
       const res = await fetch("/api/v1/auth/token/", {
         method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({email, password})
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email, password: password })
       });
       const data = await res.json();
-      statusEl.style.display = "inline-block";
+      badge.classList.remove("hidden");
       if (res.ok && data.access) {
         accessToken = data.access;
-        statusEl.className = "status-badge ok";
-        statusEl.textContent = "JWT Active";
+        badge.className = "status-badge ok";
+        badge.textContent = "JWT Active";
       } else {
-        statusEl.className = "status-badge err";
-        statusEl.textContent = "Auth Failed (" + res.status + ")";
+        badge.className = "status-badge err";
+        badge.textContent = "Auth Failed";
       }
-    } catch {
-      statusEl.style.display = "inline-block";
-      statusEl.className = "status-badge err";
-      statusEl.textContent = "API Unreachable";
+    } catch (_) {
+      badge.classList.remove("hidden");
+      badge.className = "status-badge err";
+      badge.textContent = "Unreachable";
     }
   });
 
   document.getElementById("btn-list").addEventListener("click", async () => {
     if (!liveMode) {
-      const t = i18n[currentLang];
-      showResult("resp-list", "badge-list", true, "Demo · Cache Hit (12ms)", {
-        count: t.mockTasks.length,
-        next: null,
-        previous: null,
-        results: t.mockTasks
+      showResult("resp-list", "badge-list", true, "MOCK 200", {
+        count: 2,
+        results: i18n[currentLang].mockTasks
       });
       return;
     }
-    await apiRequest("/api/v1/tasks/?lang=" + encodeURIComponent(currentLang), {
-      method: "GET",
-      headers: buildHeaders()
-    }, "resp-list", "badge-list");
+    await apiRequest("/api/v1/tasks/", { method: "GET", headers: buildHeaders() }, "resp-list", "badge-list");
+  });
+
+  document.getElementById("btn-export").addEventListener("click", async () => {
+    if (!liveMode) {
+      const lines = i18n[currentLang].mockTasks.map((row) => JSON.stringify(row)).join("\n");
+      showResult("resp-list", "badge-list", true, "MOCK JSONL", lines);
+      return;
+    }
+    await apiRequest(
+      "/api/v1/tasks/export/?format=jsonl",
+      { method: "GET", headers: buildHeaders() },
+      "resp-list",
+      "badge-list"
+    );
   });
 
   document.getElementById("btn-create").addEventListener("click", async () => {
-    const title = document.getElementById("task-title").value.trim() || "Annotation quality review";
+    const title = document.getElementById("task-title").value.trim() || "Sample RLHF Task";
     const description = document.getElementById("task-desc").value.trim();
-    const payload = {
-      translations: {[currentLang]: {title, description}},
-      status: "pending"
-    };
+    const autoTranslate = document.getElementById("task-autotranslate").checked;
     if (!liveMode) {
-      showResult("resp-create", "badge-create", true, "Demo · HTTP 201", {
-        id: "demo-created-uuid",
-        title,
-        description,
-        translations: payload.translations,
+      showResult("resp-create", "badge-create", true, "MOCK 201", {
+        id: "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+        title: title,
+        description: description,
         language: currentLang,
-        status: "pending"
+        status: "pending",
+        required_annotations: 1,
+        auto_translate_queued: autoTranslate
       });
       return;
     }
-    await apiRequest("/api/v1/tasks/", {
-      method: "POST",
-      headers: buildHeaders(),
-      body: JSON.stringify(payload)
-    }, "resp-create", "badge-create");
+    await apiRequest(
+      "/api/v1/tasks/",
+      {
+        method: "POST",
+        headers: buildHeaders(),
+        body: JSON.stringify({ title: title, description: description, auto_translate: autoTranslate })
+      },
+      "resp-create",
+      "badge-create"
+    );
+  });
+
+  document.getElementById("btn-claim").addEventListener("click", async () => {
+    if (!liveMode) {
+      showResult("resp-claim", "badge-claim", true, "MOCK 200", {
+        id: "e5f6g7h8",
+        title: i18n[currentLang].mockTasks[1].title,
+        status: "in_progress",
+        priority: "critical",
+        claimed_until: new Date(Date.now() + 900000).toISOString()
+      });
+      return;
+    }
+    await apiRequest(
+      "/api/v1/tasks/claim/",
+      { method: "POST", headers: buildHeaders(), body: JSON.stringify({ lease_seconds: 900 }) },
+      "resp-claim",
+      "badge-claim"
+    );
   });
 
   document.getElementById("btn-ai").addEventListener("click", async () => {
-    const description = document.getElementById("ai-input").value.trim() || "Review RLHF dataset annotations";
+    const description = document.getElementById("ai-input").value.trim() || "Evaluate code safety rubric";
     if (!liveMode) {
-      showResult("resp-ai", "badge-ai", true, "Demo · HTTP 200", {
-        en: {title: description, description: "Formal English task specification."},
-        es: {title: "Revisar anotaciones RLHF", description: "Especificación formal en español."},
-        fr: {title: "Examiner les annotations RLHF", description: "Spécification formelle en français."}
+      showResult("resp-ai", "badge-ai", true, "MOCK 200", {
+        en: { title: "Safety Rubric Evaluation", description: description },
+        es: { title: "Evaluación de Rúbrica de Seguridad", description: description },
+        fr: { title: "Évaluation de la Grille de Sécurité", description: description }
       });
       return;
     }
-    await apiRequest("/api/v1/ai/suggest-task/", {
-      method: "POST",
-      headers: buildHeaders(),
-      body: JSON.stringify({description, lang: currentLang})
-    }, "resp-ai", "badge-ai");
+    await apiRequest(
+      "/api/v1/ai/suggest-task/",
+      { method: "POST", headers: buildHeaders(), body: JSON.stringify({ description: description, lang: currentLang }) },
+      "resp-ai",
+      "badge-ai"
+    );
   });
 
   document.getElementById("btn-eval").addEventListener("click", async () => {
-    const prompt_text = document.getElementById("eval-input").value.trim() || "Classify sentiment as positive or negative.";
+    const promptText = document.getElementById("eval-input").value.trim() || "Write tests for parser";
     if (!liveMode) {
-      const t = i18n[currentLang];
-      document.getElementById("score-fill").style.width = "86%";
+      const score = 84;
+      document.getElementById("score-fill").style.width = score + "%";
       const ul = document.getElementById("improvements");
       ul.innerHTML = "";
-      t.improvements.forEach(item => {
+      i18n[currentLang].improvements.forEach((item) => {
         const li = document.createElement("li");
-        li.textContent = "→ " + item;
+        li.textContent = item;
         ul.appendChild(li);
       });
-      showResult("resp-eval", "badge-eval", true, "Demo · HTTP 200", {
-        score: 86,
-        improvements: t.improvements,
-        analysis: "Clear baseline prompt; add explicit boundary conditions."
+      showResult("resp-eval", "badge-eval", true, "MOCK 200", {
+        score: score,
+        improvements: i18n[currentLang].improvements
       });
       return;
     }
-    const {ok, data} = await apiRequest("/api/v1/ai/evaluate-quality/", {
-      method: "POST",
-      headers: buildHeaders(),
-      body: JSON.stringify({prompt_text, lang: currentLang})
-    }, "resp-eval", "badge-eval");
-    if (ok && data && typeof data.score === "number") {
-      document.getElementById("score-fill").style.width = Math.min(100, Math.max(0, data.score)) + "%";
-      const ul = document.getElementById("improvements");
-      ul.innerHTML = "";
-      (data.improvements || []).forEach(item => {
-        const li = document.createElement("li");
-        li.textContent = "→ " + String(item);
-        ul.appendChild(li);
-      });
+    const result = await apiRequest(
+      "/api/v1/ai/evaluate-quality/",
+      { method: "POST", headers: buildHeaders(), body: JSON.stringify({ prompt_text: promptText, lang: currentLang }) },
+      "resp-eval",
+      "badge-eval"
+    );
+    if (result.ok && result.data && typeof result.data.score === "number") {
+      document.getElementById("score-fill").style.width = Math.min(100, result.data.score) + "%";
     }
+  });
+
+  document.getElementById("btn-ws-connect").addEventListener("click", () => {
+    if (!liveMode) {
+      wsLog.unshift({ event: "task.translated", id: "a1b2c3d4", languages: ["en", "es", "fr"] });
+      showResult("resp-ws", "badge-ws", true, "MOCK STREAM", wsLog);
+      return;
+    }
+    if (!accessToken) {
+      showResult("resp-ws", "badge-ws", false, "JWT Required", {
+        error: "Authenticate with JWT first to establish a WebSocket stream."
+      });
+      return;
+    }
+    if (taskSocket) {
+      taskSocket.close();
+    }
+    const proto = window.location.protocol === "https:" ? "wss://" : "ws://";
+    const orgId = document.getElementById("auth-org").value.trim();
+    taskSocket = new WebSocket(proto + window.location.host + "/ws/tasks/");
+    taskSocket.addEventListener("open", () => {
+      taskSocket.send(JSON.stringify({ type: "authenticate", token: accessToken, organization_id: orgId || undefined }));
+      showResult("resp-ws", "badge-ws", true, "WS OPEN", { status: "Authenticating..." });
+    });
+    taskSocket.addEventListener("message", (ev) => {
+      try { wsLog.unshift(JSON.parse(ev.data)); } catch (_) { wsLog.unshift(ev.data); }
+      showResult("resp-ws", "badge-ws", true, "WS LIVE", wsLog.slice(0, 15));
+    });
+    taskSocket.addEventListener("close", (ev) => {
+      showResult("resp-ws", "badge-ws", false, "WS CLOSED (" + ev.code + ")", wsLog.slice(0, 15));
+    });
+  });
+
+  document.getElementById("btn-ws-disconnect").addEventListener("click", () => {
+    if (taskSocket) {
+      taskSocket.close();
+      taskSocket = null;
+    }
+    showResult("resp-ws", "badge-ws", true, "DISCONNECTED", { status: "Stream closed." });
   });
 </script>
 </body>

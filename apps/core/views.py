@@ -31,6 +31,15 @@ logger = logging.getLogger(__name__)
 REQUEST_COUNT_KEY = "mltask:metrics:requests_total"
 CACHE_HIT_KEY = "mltask:metrics:cache_hits"
 CACHE_MISS_KEY = "mltask:metrics:cache_misses"
+AI_REQUESTS_KEY = "mltask:metrics:ai_requests_total"
+AI_PROMPT_TOKENS_KEY = "mltask:metrics:ai_prompt_tokens_total"
+AI_COMPLETION_TOKENS_KEY = "mltask:metrics:ai_completion_tokens_total"
+AI_COST_NANOUSD_KEY = "mltask:metrics:ai_cost_nanousd_total"
+
+# Published GPT-4o-mini rates: $0.15 / 1M input tokens (150 nano-USD/token),
+# $0.60 / 1M output tokens (600 nano-USD/token)
+_INPUT_TOKEN_NANOUSD = 150
+_OUTPUT_TOKEN_NANOUSD = 600
 
 
 def _coerce_int(value: Any) -> int:
@@ -70,6 +79,52 @@ def record_cache_hit() -> None:
 def record_cache_miss() -> None:
     """Increment the global Redis/cache miss counter."""
     increment_metric(CACHE_MISS_KEY)
+
+
+def record_ai_token_usage(
+    prompt_tokens: int,
+    completion_tokens: int,
+    organization_id: str | None = None,
+) -> None:
+    """Record global and per-organization OpenAI token and estimated USD cost telemetry."""
+    p_tok = max(0, int(prompt_tokens))
+    c_tok = max(0, int(completion_tokens))
+    cost_nanousd = (p_tok * _INPUT_TOKEN_NANOUSD) + (c_tok * _OUTPUT_TOKEN_NANOUSD)
+
+    increment_metric(AI_REQUESTS_KEY, 1)
+    if p_tok:
+        increment_metric(AI_PROMPT_TOKENS_KEY, p_tok)
+    if c_tok:
+        increment_metric(AI_COMPLETION_TOKENS_KEY, c_tok)
+    if cost_nanousd:
+        increment_metric(AI_COST_NANOUSD_KEY, cost_nanousd)
+
+    if organization_id:
+        prefix = f"mltask:usage:ai:{organization_id}"
+        increment_metric(f"{prefix}:requests", 1)
+        if p_tok:
+            increment_metric(f"{prefix}:prompt_tokens", p_tok)
+        if c_tok:
+            increment_metric(f"{prefix}:completion_tokens", c_tok)
+        if cost_nanousd:
+            increment_metric(f"{prefix}:cost_nanousd", cost_nanousd)
+
+
+def get_org_ai_usage(organization_id: str) -> dict[str, int | float]:
+    """Read cumulative and rolling-daily AI usage telemetry for an organization."""
+    prefix = f"mltask:usage:ai:{organization_id}"
+    daily_used = _coerce_int(cache.get(f"mltask:quota:ai:{organization_id}", 0))
+    req_total = _coerce_int(cache.get(f"{prefix}:requests", 0))
+    prompt_tok = _coerce_int(cache.get(f"{prefix}:prompt_tokens", 0))
+    comp_tok = _coerce_int(cache.get(f"{prefix}:completion_tokens", 0))
+    cost_nanousd = _coerce_int(cache.get(f"{prefix}:cost_nanousd", 0))
+    return {
+        "requests_daily": daily_used,
+        "requests_total": req_total,
+        "prompt_tokens": prompt_tok,
+        "completion_tokens": comp_tok,
+        "estimated_cost_usd": round(cost_nanousd / 1_000_000_000, 6),
+    }
 
 
 class LivenessView(APIView):
@@ -322,6 +377,11 @@ class MetricsView(APIView):
         total_cache = cache_hits + cache_misses
         cache_hit_rate = (cache_hits / total_cache) if total_cache else 0.0
 
+        ai_requests = _coerce_int(cache.get(AI_REQUESTS_KEY, 0))
+        ai_prompt_tokens = _coerce_int(cache.get(AI_PROMPT_TOKENS_KEY, 0))
+        ai_completion_tokens = _coerce_int(cache.get(AI_COMPLETION_TOKENS_KEY, 0))
+        ai_cost_usd = _coerce_int(cache.get(AI_COST_NANOUSD_KEY, 0)) / 1_000_000_000
+
         metrics = [
             "# HELP mltask_http_requests_total Total HTTP requests handled.",
             "# TYPE mltask_http_requests_total counter",
@@ -335,6 +395,18 @@ class MetricsView(APIView):
             "# HELP mltask_cache_hit_rate Cache hit rate across Redis-backed endpoints.",
             "# TYPE mltask_cache_hit_rate gauge",
             f"mltask_cache_hit_rate {cache_hit_rate:.4f}",
+            "# HELP mltask_ai_requests_total Total upstream OpenAI requests completed.",
+            "# TYPE mltask_ai_requests_total counter",
+            f"mltask_ai_requests_total {ai_requests}",
+            "# HELP mltask_ai_prompt_tokens_total Total OpenAI prompt tokens consumed.",
+            "# TYPE mltask_ai_prompt_tokens_total counter",
+            f"mltask_ai_prompt_tokens_total {ai_prompt_tokens}",
+            "# HELP mltask_ai_completion_tokens_total Total OpenAI completion tokens consumed.",
+            "# TYPE mltask_ai_completion_tokens_total counter",
+            f"mltask_ai_completion_tokens_total {ai_completion_tokens}",
+            "# HELP mltask_ai_estimated_cost_usd_total Estimated cumulative OpenAI spend in USD.",
+            "# TYPE mltask_ai_estimated_cost_usd_total counter",
+            f"mltask_ai_estimated_cost_usd_total {ai_cost_usd:.6f}",
         ]
         return HttpResponse(
             "\n".join(metrics) + "\n",

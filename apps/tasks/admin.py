@@ -8,7 +8,7 @@ from django.http import HttpRequest
 
 from parler.admin import TranslatableAdmin
 
-from apps.tasks.models import Task
+from apps.tasks.models import Task, TaskAnnotation
 
 
 @admin.register(Task)
@@ -59,3 +59,18 @@ class TaskAdmin(TranslatableAdmin):  # type: ignore[misc]
             return Task.all_objects.all()  # type: ignore[no-any-return]
         qs: QuerySet[Task] = super().get_queryset(request)
         return qs
+
+
+@admin.register(TaskAnnotation)
+class TaskAnnotationAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    """Admin view for structured RLHF task annotations."""
+
+    list_display = (
+        "task",
+        "annotator",
+        "preference",
+        "duration_seconds",
+        "created_at",
+    )
+    list_filter = ("preference", "created_at")
+    readonly_fields = ("id", "created_at")

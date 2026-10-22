@@ -10,7 +10,15 @@ from django.http import HttpRequest
 from django.utils.html import format_html
 from django.utils.safestring import SafeString
 
-from apps.core.models import AuditLog, CustomUser, Organization, OrganizationMember
+from apps.core.models import (
+    AuditLog,
+    CustomUser,
+    Organization,
+    OrganizationAPIKey,
+    OrganizationMember,
+    WebhookDelivery,
+    WebhookEndpoint,
+)
 
 
 @admin.register(CustomUser)
@@ -152,3 +160,39 @@ class AuditLogAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
 
     def has_delete_permission(self, request: HttpRequest, obj: Any = None) -> bool:
         return False
+
+
+@admin.register(OrganizationAPIKey)
+class OrganizationAPIKeyAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    """Admin view for scoped M2M API keys (hashed_key hidden)."""
+
+    list_display = ("name", "prefix", "organization", "role", "revoked_at", "last_used_at")
+    list_filter = ("role", "organization")
+    readonly_fields = ("id", "prefix", "hashed_key", "created_at", "last_used_at")
+
+
+@admin.register(WebhookEndpoint)
+class WebhookEndpointAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    """Admin view for tenant webhook endpoints."""
+
+    list_display = ("url", "organization", "is_active", "failure_count", "last_triggered_at")
+    list_filter = ("is_active", "organization")
+    readonly_fields = ("id", "secret", "created_at", "last_triggered_at")
+
+
+@admin.register(WebhookDelivery)
+class WebhookDeliveryAdmin(admin.ModelAdmin):  # type: ignore[type-arg]
+    """Read-only admin view for webhook delivery attempts."""
+
+    list_display = ("event_type", "endpoint", "response_status", "success", "delivered_at")
+    list_filter = ("event_type", "success")
+    readonly_fields = (
+        "id",
+        "endpoint",
+        "event_type",
+        "payload",
+        "response_status",
+        "success",
+        "error_message",
+        "delivered_at",
+    )

@@ -61,6 +61,7 @@ MIDDLEWARE: list[str] = [
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
     "apps.core.middleware.TenantMiddleware",
     "apps.core.middleware.TenantPermissionMiddleware",
+    "apps.core.idempotency.IdempotencyKeyMiddleware",
     "apps.core.middleware.RequestLoggingMiddleware",
     "apps.analytics.middleware.RequestTimingMiddleware",
     "apps.core.middleware.ContentSecurityPolicyMiddleware",
@@ -150,6 +151,7 @@ MEDIA_ROOT: Path = BASE_DIR / "media"
 # =============================================================================
 REST_FRAMEWORK: dict[str, Any] = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "apps.core.authentication.OrganizationAPIKeyAuthentication",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
@@ -202,10 +204,11 @@ SIMPLE_JWT: dict[str, Any] = {
 SPECTACULAR_SETTINGS: dict[str, Any] = {
     "TITLE": "Multilingual Task API",
     "DESCRIPTION": (
-        "Production-grade AI annotation platform API with multilingual support, "
-        "Redis caching, and LLM pipeline integration."
+        "Production-grade multi-tenant REST & WebSocket API for multilingual RLHF task "
+        "orchestration, atomic annotation leasing, inter-annotator consensus, OpenAI FinOps "
+        "telemetry, scoped M2M API keys, and HMAC-signed webhooks."
     ),
-    "VERSION": "1.0.0",
+    "VERSION": "1.2.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
 

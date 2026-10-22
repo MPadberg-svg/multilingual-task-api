@@ -11,6 +11,7 @@ Cache keys follow the project convention:
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import logging
@@ -30,9 +31,13 @@ from apps.ai_assist.schemas import (
     TranslationSuggestionSchema,
 )
 from apps.core.security import InputValidator
-from apps.core.views import record_cache_hit, record_cache_miss
+from apps.core.views import record_ai_token_usage, record_cache_hit, record_cache_miss
 
 logger = logging.getLogger(__name__)
+
+_ACTIVE_ORG_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "_ACTIVE_ORG_ID", default=None
+)
 
 CACHE_TTL_AI: int = settings.CACHE_TTL.get("ai_suggestions", 3600)
 OPENAI_TIMEOUT_SECONDS: float = 30.0
@@ -115,6 +120,16 @@ class AIService:
                 max_tokens=settings.OPENAI_MAX_TOKENS,
                 response_format={"type": "json_object"},
             )
+            usage = getattr(response, "usage", None)
+            raw_pt = getattr(usage, "prompt_tokens", 0)
+            raw_ct = getattr(usage, "completion_tokens", 0)
+            prompt_tokens = int(raw_pt) if isinstance(raw_pt, (int, float)) else 0
+            completion_tokens = int(raw_ct) if isinstance(raw_ct, (int, float)) else 0
+            record_ai_token_usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                organization_id=_ACTIVE_ORG_ID.get(),
+            )
             content = response.choices[0].message.content
             return content or ""
 
@@ -159,6 +174,7 @@ class AIService:
         user_id: str,
         lang: str,
         user_input: str,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
         """Generate AI-suggested EN/ES/FR translations validated via Pydantic."""
         sanitized = self._validate_prose_input(user_input)
@@ -174,7 +190,11 @@ class AIService:
 
         record_cache_miss()
         prompt = self.template_manager.render("task_translation", user_input=sanitized, lang=lang)
-        raw = self._call_llm(prompt, temperature=0.3)
+        token = _ACTIVE_ORG_ID.set(organization_id)
+        try:
+            raw = self._call_llm(prompt, temperature=0.3)
+        finally:
+            _ACTIVE_ORG_ID.reset(token)
         parsed = _safe_json_parse(raw)
         if not parsed:
             raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")
@@ -194,6 +214,7 @@ class AIService:
         user_id: str,
         lang: str,
         user_input: str,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
         """Evaluate prompt quality and validate score/improvements via Pydantic."""
         sanitized = self._validate_prose_input(user_input)
@@ -207,7 +228,11 @@ class AIService:
 
         record_cache_miss()
         prompt = self.template_manager.render("prompt_evaluation", user_input=sanitized, lang=lang)
-        raw = self._call_llm(prompt, temperature=0.2)
+        token = _ACTIVE_ORG_ID.set(organization_id)
+        try:
+            raw = self._call_llm(prompt, temperature=0.2)
+        finally:
+            _ACTIVE_ORG_ID.reset(token)
         parsed = _safe_json_parse(raw)
         if not parsed:
             raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")
@@ -227,6 +252,7 @@ class AIService:
         user_id: str,
         lang: str,
         user_input: str,
+        organization_id: str | None = None,
     ) -> dict[str, Any]:
         """Generate RLHF-style pytest unit tests validated via Pydantic."""
         sanitized = self._validate_code_or_spec_input(user_input)
@@ -240,7 +266,11 @@ class AIService:
 
         record_cache_miss()
         prompt = self.template_manager.render("rlhf_generation", user_input=sanitized, lang=lang)
-        raw = self._call_llm(prompt, temperature=0.4)
+        token = _ACTIVE_ORG_ID.set(organization_id)
+        try:
+            raw = self._call_llm(prompt, temperature=0.4)
+        finally:
+            _ACTIVE_ORG_ID.reset(token)
         parsed = _safe_json_parse(raw)
         if not parsed:
             raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")

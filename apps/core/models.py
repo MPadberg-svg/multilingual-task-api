@@ -1,14 +1,18 @@
-"""Multi-tenancy and audit models for the core app.
+"""Multi-tenancy, M2M API keys, outbound webhooks, and audit models for the core app.
 
 Provides:
     - ``CustomUser``: UUID-indexed, email-authenticated user model.
     - ``Organization``: Tenant container with plan-based limits.
     - ``OrganizationMember``: RBAC membership linking users to orgs.
+    - ``OrganizationAPIKey``: Prefix-indexed, SHA-256-hashed scoped M2M API keys.
+    - ``WebhookEndpoint`` / ``WebhookDelivery``: HMAC-SHA256 outbound event subscriptions.
     - ``AuditLog``: Immutable audit trail for security and compliance.
 """
 
 from __future__ import annotations
 
+import hashlib
+import secrets
 import uuid
 from typing import Any, ClassVar
 
@@ -16,6 +20,22 @@ from django.conf import settings
 from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.utils import timezone
+
+VALID_API_KEY_SCOPES: frozenset[str] = frozenset(
+    {"tasks:read", "tasks:write", "tasks:export", "ai:write"}
+)
+
+VALID_WEBHOOK_EVENTS: frozenset[str] = frozenset(
+    {
+        "task.created",
+        "task.updated",
+        "task.completed",
+        "task.deleted",
+        "task.consensus_reached",
+        "webhook.ping",
+    }
+)
 
 
 class CustomUserManager(BaseUserManager["CustomUser"]):
@@ -178,6 +198,152 @@ class OrganizationMember(models.Model):
         return f"{self.user} @ {self.organization} ({self.role})"
 
 
+class OrganizationAPIKey(models.Model):
+    """Scoped M2M API key stored strictly as a SHA-256 hex digest."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="api_keys",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="created_api_keys",
+    )
+    name = models.CharField(max_length=100)
+    prefix = models.CharField(max_length=24, db_index=True)
+    hashed_key = models.CharField(max_length=64, unique=True)
+    role = models.CharField(
+        max_length=20,
+        choices=[
+            ("viewer", "Viewer"),
+            ("contributor", "Contributor"),
+            ("admin", "Admin"),
+        ],
+        default="contributor",
+    )
+    scopes = models.JSONField(default=list, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["organization", "revoked_at"]),
+            models.Index(fields=["prefix"]),
+        ]
+
+    @staticmethod
+    def hash_raw_key(raw_key: str) -> str:
+        """Compute deterministic SHA-256 hex digest for an API key."""
+        return hashlib.sha256(raw_key.encode("utf-8")).hexdigest()
+
+    @classmethod
+    def create_with_raw_key(
+        cls,
+        *,
+        organization: Organization,
+        created_by: Any,
+        name: str,
+        role: str = "contributor",
+        scopes: list[str] | None = None,
+        expires_at: Any = None,
+    ) -> tuple["OrganizationAPIKey", str]:
+        """Generate a one-time plaintext key and persist only its prefix and SHA-256 digest."""
+        key_id_part = secrets.token_hex(4)
+        secret_part = secrets.token_urlsafe(32)
+        prefix = f"mlk_live_{key_id_part}"
+        raw_key = f"{prefix}_{secret_part}"
+        instance = cls.objects.create(
+            organization=organization,
+            created_by=created_by,
+            name=name,
+            prefix=prefix,
+            hashed_key=cls.hash_raw_key(raw_key),
+            role=role,
+            scopes=list(scopes) if scopes is not None else sorted(VALID_API_KEY_SCOPES),
+            expires_at=expires_at,
+        )
+        return instance, raw_key
+
+    @property
+    def is_usable(self) -> bool:
+        """Return True when the key is neither revoked nor expired."""
+        if self.revoked_at is not None:
+            return False
+        if self.expires_at is not None and self.expires_at <= timezone.now():
+            return False
+        return True
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.prefix}***)"
+
+
+class WebhookEndpoint(models.Model):
+    """Tenant-scoped outbound webhook endpoint signed with HMAC-SHA256."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="webhooks",
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_webhooks",
+    )
+    url = models.URLField(max_length=500)
+    description = models.CharField(max_length=255, blank=True)
+    secret = models.CharField(max_length=128)
+    events = models.JSONField(default=list)
+    is_active = models.BooleanField(default=True)
+    failure_count = models.PositiveIntegerField(default=0)
+    last_triggered_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["organization", "is_active"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"Webhook({self.organization_id} -> {self.url})"
+
+
+class WebhookDelivery(models.Model):
+    """Audit record of an outbound webhook HTTP delivery attempt."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    endpoint = models.ForeignKey(
+        WebhookEndpoint,
+        on_delete=models.CASCADE,
+        related_name="deliveries",
+    )
+    event_type = models.CharField(max_length=50)
+    payload = models.JSONField(default=dict)
+    response_status = models.PositiveSmallIntegerField(null=True, blank=True)
+    success = models.BooleanField(default=False)
+    error_message = models.CharField(max_length=500, blank=True)
+    delivered_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-delivered_at"]
+        indexes = [
+            models.Index(fields=["endpoint", "-delivered_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.event_type} -> {self.response_status or 'ERR'}"
+
+
 class AuditLog(models.Model):
     """Immutable audit trail for security and compliance."""
 
@@ -207,6 +373,10 @@ class AuditLog(models.Model):
             ("permission_changed", "Permission Changed"),
             ("ai_request", "AI Request"),
             ("cache_cleared", "Cache Cleared"),
+            ("api_key_created", "API Key Created"),
+            ("api_key_revoked", "API Key Revoked"),
+            ("webhook_created", "Webhook Created"),
+            ("webhook_deleted", "Webhook Deleted"),
         ],
     )
     resource_type = models.CharField(max_length=50)
