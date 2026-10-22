@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
-from apps.core.webhooks import dispatch_organization_webhooks
+from apps.core.outbox import enqueue_outbox_event
 from apps.tasks.models import Task, TaskAnnotation
 
 
@@ -83,8 +83,16 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
             "annotation_count": total,
             "mean_scores": mean_scores,
         }
-        dispatch_organization_webhooks(org_id, "task.consensus_reached", event_data)
-        dispatch_organization_webhooks(org_id, "task.completed", event_data)
+        enqueue_outbox_event(
+            organization_id=org_id,
+            event_type="task.consensus_reached",
+            payload=event_data,
+        )
+        enqueue_outbox_event(
+            organization_id=org_id,
+            event_type="task.completed",
+            payload=event_data,
+        )
 
     return {
         "annotation_count": total,

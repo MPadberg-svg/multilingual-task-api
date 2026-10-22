@@ -14,12 +14,15 @@ from typing import Any
 from django.http import HttpRequest
 from django.utils import timezone
 
+from drf_spectacular.contrib.rest_framework_simplejwt import SimpleJWTScheme
 from drf_spectacular.extensions import OpenApiAuthenticationExtension
 from rest_framework.authentication import BaseAuthentication
 from rest_framework.exceptions import AuthenticationFailed, PermissionDenied
 from rest_framework.request import Request
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 from apps.core.models import OrganizationAPIKey
+from apps.core.rls import rls_bypass
 
 _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
@@ -75,39 +78,52 @@ def resolve_api_key_principal(
     if len(parts) < 4 or parts[0] != "mlk" or parts[1] != "live":
         raise AuthenticationFailed("Malformed API key.")
 
+    raw_req = getattr(request, "_request", request)
+    cached_key = getattr(raw_req, "_api_key", None)
+    if cached_key is not None and getattr(cached_key, "created_by", None) is not None:
+        _enforce_key_scopes(request, cached_key)
+        setattr(request, "organization", cached_key.organization)
+        setattr(request, "membership_role", cached_key.role)
+        setattr(request, "_api_key", cached_key)
+        return cached_key.created_by, cached_key
+
     prefix = f"mlk_live_{parts[2]}"
     candidate_hash = OrganizationAPIKey.hash_raw_key(raw_key)
 
-    candidates = list(
-        OrganizationAPIKey.objects.select_related("organization", "created_by").filter(
-            prefix=prefix,
-            revoked_at__isnull=True,
+    with rls_bypass():
+        candidates = list(
+            OrganizationAPIKey.objects.select_related("organization", "created_by").filter(
+                prefix=prefix,
+                revoked_at__isnull=True,
+            )
         )
-    )
 
-    matched_key: OrganizationAPIKey | None = None
-    for candidate in candidates:
-        if hmac.compare_digest(candidate.hashed_key, candidate_hash):
-            matched_key = candidate
-            break
+        matched_key: OrganizationAPIKey | None = None
+        for candidate in candidates:
+            if hmac.compare_digest(candidate.hashed_key, candidate_hash):
+                matched_key = candidate
+                break
 
-    if matched_key is None or not matched_key.is_usable:
-        raise AuthenticationFailed("Invalid, expired, or revoked API key.")
+        if matched_key is None or not matched_key.is_usable:
+            raise AuthenticationFailed("Invalid, expired, or revoked API key.")
 
-    if not matched_key.organization.is_active or not matched_key.created_by.is_active:
-        raise AuthenticationFailed("API key tenant or owner is inactive.")
+        if not matched_key.organization.is_active or not matched_key.created_by.is_active:
+            raise AuthenticationFailed("API key tenant or owner is inactive.")
 
-    _enforce_key_scopes(request, matched_key)
+        _enforce_key_scopes(request, matched_key)
 
-    # Bind tenant and effective RBAC role directly onto the request
-    setattr(request, "organization", matched_key.organization)
-    setattr(request, "membership_role", matched_key.role)
-    setattr(request, "_api_key", matched_key)
+        # Bind tenant and effective RBAC role directly onto the request
+        for target_req in (raw_req, request):
+            setattr(target_req, "organization", matched_key.organization)
+            setattr(target_req, "membership_role", matched_key.role)
+            setattr(target_req, "_api_key", matched_key)
 
-    now = timezone.now()
-    if matched_key.last_used_at is None or (now - matched_key.last_used_at) > timedelta(seconds=60):
-        OrganizationAPIKey.objects.filter(id=matched_key.id).update(last_used_at=now)
-        matched_key.last_used_at = now
+        now = timezone.now()
+        if matched_key.last_used_at is None or (now - matched_key.last_used_at) > timedelta(
+            seconds=60
+        ):
+            OrganizationAPIKey.objects.filter(id=matched_key.id).update(last_used_at=now)
+            matched_key.last_used_at = now
 
     return matched_key.created_by, matched_key
 
@@ -135,3 +151,26 @@ class OrganizationAPIKeyScheme(OpenApiAuthenticationExtension):  # type: ignore[
             "name": "X-API-Key",
             "description": "Scoped organization M2M API key (mlk_live_<prefix>_<secret>).",
         }
+
+
+class CachedJWTAuthentication(JWTAuthentication):
+    """JWT authentication backend that reuses user/token resolved earlier in middleware."""
+
+    def authenticate(self, request: Request) -> tuple[Any, Any] | None:
+        raw_req = getattr(request, "_request", request)
+        cached_user = getattr(raw_req, "_resolved_jwt_user", None)
+        cached_token = getattr(raw_req, "_jwt_token", None)
+        if cached_user is not None and cached_token is not None:
+            return cached_user, cached_token
+        result = super().authenticate(request)
+        if result is not None:
+            user_obj, validated_token = result
+            setattr(raw_req, "_resolved_jwt_user", user_obj)
+            setattr(raw_req, "_jwt_token", validated_token)
+        return result
+
+
+class CachedJWTScheme(SimpleJWTScheme):  # type: ignore[no-untyped-call]
+    """Preserve SimpleJWT ``jwtAuth`` OpenAPI 3.0 security definition for ``CachedJWTAuthentication``."""
+
+    target_class = "apps.core.authentication.CachedJWTAuthentication"

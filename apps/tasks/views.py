@@ -38,8 +38,8 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.core.models import AuditLog
+from apps.core.outbox import enqueue_outbox_event
 from apps.core.views import record_cache_hit, record_cache_miss
-from apps.core.webhooks import dispatch_organization_webhooks
 from apps.tasks.consensus import evaluate_task_consensus
 from apps.tasks.filters import TaskFilter
 from apps.tasks.models import Task, TaskAnnotation
@@ -430,6 +430,22 @@ class TaskViewSet(viewsets.ModelViewSet):
                     "updated_at",
                 ]
             )
+            if task.organization_id:
+                event_data = {
+                    "task_id": str(task.id),
+                    "consensus_choice": choice,
+                    "adjudicated_by": str(request.user.id),
+                }
+                enqueue_outbox_event(
+                    organization_id=str(task.organization_id),
+                    event_type="task.consensus_reached",
+                    payload=event_data,
+                )
+                enqueue_outbox_event(
+                    organization_id=str(task.organization_id),
+                    event_type="task.completed",
+                    payload=event_data,
+                )
 
         self._invalidate_for_task(task)
         organization = getattr(request, "organization", None) or task.organization
@@ -441,16 +457,6 @@ class TaskViewSet(viewsets.ModelViewSet):
             resource_id=str(task.id),
             metadata={"consensus_choice": choice, "rationale": rationale},
         )
-        if task.organization_id:
-            event_data = {
-                "task_id": str(task.id),
-                "consensus_choice": choice,
-                "adjudicated_by": str(request.user.id),
-            }
-            dispatch_organization_webhooks(
-                str(task.organization_id), "task.consensus_reached", event_data
-            )
-            dispatch_organization_webhooks(str(task.organization_id), "task.completed", event_data)
 
         refreshed = self.get_queryset().get(pk=task.pk)
         return Response(self.get_serializer(refreshed).data, status=status.HTTP_200_OK)
@@ -592,7 +598,7 @@ class TaskViewSet(viewsets.ModelViewSet):
         return response
 
     def _schedule_post_create_hooks(self, instance: Task) -> None:
-        """Schedule async auto-translation and outbound webhook notifications after commit."""
+        """Persist transactional outbox webhook event and schedule post-commit auto-translation."""
         auto_translate = bool(getattr(instance, "_auto_translate_requested", False))
         seed_title = instance.safe_translation_getter("title", any_language=True) or ""
         seed_desc = instance.safe_translation_getter("description", any_language=True) or ""
@@ -600,8 +606,20 @@ class TaskViewSet(viewsets.ModelViewSet):
         task_id_str = str(instance.id)
         org_id_str = str(instance.organization_id) if instance.organization_id else None
 
-        def _on_commit() -> None:
-            if auto_translate and seed_input:
+        if org_id_str:
+            enqueue_outbox_event(
+                organization_id=org_id_str,
+                event_type="task.created",
+                payload={
+                    "task_id": task_id_str,
+                    "status": instance.status,
+                    "priority": instance.priority,
+                },
+            )
+
+        if auto_translate and seed_input:
+
+            def _on_commit() -> None:
                 from apps.tasks.tasks import generate_task_translations
 
                 try:
@@ -609,42 +627,33 @@ class TaskViewSet(viewsets.ModelViewSet):
                 except Exception:
                     logger.warning("Failed to enqueue auto-translation for task %s", task_id_str)
 
-            if org_id_str:
-                dispatch_organization_webhooks(
-                    org_id_str,
-                    "task.created",
-                    {
-                        "task_id": task_id_str,
-                        "status": instance.status,
-                        "priority": instance.priority,
-                    },
-                )
-
-        transaction.on_commit(_on_commit)
+            transaction.on_commit(_on_commit)
 
     def perform_create(self, serializer: Any) -> Task:
         """Create task bound to user (and active organization), invalidate caches, and trigger hooks."""
         organization = getattr(self.request, "organization", None)
-        instance: Task = serializer.save(user=self.request.user, organization=organization)
+        with transaction.atomic():
+            instance: Task = serializer.save(user=self.request.user, organization=organization)
+            self._schedule_post_create_hooks(instance)
         self._invalidate_for_task(instance)
-        self._schedule_post_create_hooks(instance)
         return instance
 
     def perform_update(self, serializer: Any) -> Task:
-        """Update task, invalidate caches, and notify webhooks on completion."""
+        """Update task, invalidate caches, and notify webhooks atomically via outbox on completion."""
         previous_status = serializer.instance.status
-        instance: Task = serializer.save()
+        with transaction.atomic():
+            instance: Task = serializer.save()
+            if (
+                previous_status != "completed"
+                and instance.status == "completed"
+                and instance.organization_id
+            ):
+                enqueue_outbox_event(
+                    organization_id=str(instance.organization_id),
+                    event_type="task.completed",
+                    payload={"task_id": str(instance.id), "status": instance.status},
+                )
         self._invalidate_for_task(instance)
-        if (
-            previous_status != "completed"
-            and instance.status == "completed"
-            and instance.organization_id
-        ):
-            dispatch_organization_webhooks(
-                str(instance.organization_id),
-                "task.completed",
-                {"task_id": str(instance.id), "status": instance.status},
-            )
         return instance
 
     def perform_destroy(self, instance: Task) -> None:
