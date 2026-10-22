@@ -18,7 +18,7 @@ variable "environment" {
 variable "image_tag" {
   description = "Immutable container image tag (e.g. git SHA or release tag)"
   type        = string
-  default     = "v1.3.1"
+  default     = "v1.3.2"
 }
 
 variable "domain_name" {
@@ -79,6 +79,25 @@ variable "existing_github_oidc_provider_arn" {
   description = "Existing GitHub OIDC provider ARN when create_github_oidc_provider is false"
   type        = string
   default     = ""
+}
+
+variable "enable_waf" {
+  description = "Attach an AWS WAFv2 WebACL (IP rate limit + OWASP managed rules) to CloudFront"
+  type        = bool
+  default     = true
+}
+
+variable "waf_rate_limit_per_5m" {
+  description = "Maximum requests per 5-minute window from a single client IP at the WAFv2 edge"
+  type        = number
+  default     = 2000
+}
+
+variable "origin_verify_secret" {
+  description = "Optional shared secret header injected by CloudFront and enforced on the ALB to prevent direct-origin WAF bypass"
+  type        = string
+  default     = ""
+  sensitive   = true
 }
 
 variable "vpc_cidr" {

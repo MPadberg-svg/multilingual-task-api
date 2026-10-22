@@ -120,6 +120,7 @@ sync-github-vars:
 	gh variable set ECS_CELERY_TASK_DEFINITION --body "$$(echo "$$OUT" | jq -r '.ecs_celery_task_family.value')"; \
 	gh variable set ECS_CELERY_BEAT_SERVICE --body "$$(echo "$$OUT" | jq -r '.ecs_celery_beat_service_name.value')"; \
 	gh variable set ECS_CELERY_BEAT_TASK_DEFINITION --body "$$(echo "$$OUT" | jq -r '.ecs_celery_beat_task_family.value')"; \
+	gh variable set CLOUDFRONT_DOMAIN --body "$$(echo "$$OUT" | jq -r '.cloudfront_domain.value')"; \
 	gh variable set PRIVATE_SUBNET_IDS --body "$$(echo "$$OUT" | jq -r '.private_subnet_ids.value | map("\"" + . + "\"") | join(",")')"; \
 	gh variable set ECS_SECURITY_GROUP_ID --body "$$(echo "$$OUT" | jq -r '.ecs_security_group_id.value')"
 
