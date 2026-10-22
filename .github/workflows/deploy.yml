@@ -1,0 +1,193 @@
+name: Deploy to AWS ECS
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Target AWS environment"
+        required: true
+        default: "staging"
+        type: choice
+        options:
+          - staging
+          - production
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+  ECS_TASK_DEFINITION: ${{ vars.ECS_TASK_DEFINITION }}
+  ECS_CELERY_SERVICE: ${{ vars.ECS_CELERY_SERVICE }}
+  ECS_CELERY_TASK_DEFINITION: ${{ vars.ECS_CELERY_TASK_DEFINITION }}
+  ALB_PROTOCOL: ${{ vars.ALB_PROTOCOL || 'https' }}
+
+jobs:
+  build:
+    name: Build and Push Immutable ECR Image
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.build-image.outputs.image }}
+    steps:
+      - name: Preflight check
+        run: |
+          missing=()
+          for var in AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SERVICE ECS_TASK_DEFINITION; do
+            val=$(printenv "$var")
+            if [ -z "$val" ]; then
+              missing+=("$var")
+            fi
+          done
+          if [ ${#missing[@]} -ne 0 ]; then
+            echo "::error::Missing required repository variables: ${missing[*]}"
+            echo "Configure them in Settings → Secrets and variables → Actions → Variables (from terraform output)."
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push immutable SHA image to ECR
+        id: build-image
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t "$ECR_REPOSITORY:$IMAGE_TAG" .
+          docker push "$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "image=$ECR_REPOSITORY:$IMAGE_TAG" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to ECS (${{ inputs.target_environment }})
+    needs: build
+    environment: ${{ inputs.target_environment }}
+    runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run database migrations synchronously before rollout
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --launch-type FARGATE \
+            --task-definition "$ECS_TASK_DEFINITION" \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
+            --overrides "{\"containerOverrides\": [{\"name\": \"api\", \"command\": [\"python\", \"manage.py\", \"migrate\", \"--noinput\"]}]}" \
+            --query 'tasks[0].taskArn' \
+            --output text)
+          echo "Waiting for migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN"
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Database migration failed with exit code $EXIT_CODE"
+            exit 1
+          fi
+
+      - name: Fetch current API task definition
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_TASK_DEFINITION" \
+            --query taskDefinition \
+          | jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+          > task-def-api.json
+
+      - name: Render updated API task definition
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        id: render-api-task
+        with:
+          task-definition: task-def-api.json
+          container-name: api
+          image: ${{ env.IMAGE }}
+
+      - name: Deploy ECS API service (rolling update)
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.render-api-task.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true
+
+      - name: Deploy ECS Celery worker service (if configured)
+        if: env.ECS_CELERY_SERVICE != '' && env.ECS_CELERY_TASK_DEFINITION != ''
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$ECS_CELERY_TASK_DEFINITION" \
+            --query taskDefinition \
+          | jq --arg IMG "$IMAGE" '
+              del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)
+              | .containerDefinitions[0].image = $IMG
+            ' > task-def-celery.json
+          NEW_CELERY_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-def-celery.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_CELERY_SERVICE" \
+            --task-definition "$NEW_CELERY_ARN" > /dev/null
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_CELERY_SERVICE"
+
+      - name: Warm Redis cache
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --launch-type FARGATE \
+            --task-definition "$ECS_TASK_DEFINITION" \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.PRIVATE_SUBNET_IDS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUP_ID }}],assignPublicIp=DISABLED}" \
+            --overrides "{\"containerOverrides\": [{\"name\": \"api\", \"command\": [\"python\", \"manage.py\", \"warm_cache\", \"--languages\", \"en\", \"es\", \"fr\"]}]}" \
+            --query 'tasks[0].taskArn' \
+            --output text)
+          aws ecs wait tasks-stopped --cluster "$ECS_CLUSTER" --tasks "$TASK_ARN"
+
+      - name: Verify ALB healthcheck
+        run: |
+          ALB_DNS=$(aws elbv2 describe-load-balancers \
+            --names multilingual-task-api-alb \
+            --query 'LoadBalancers[0].DNSName' \
+            --output text)
+          for i in {1..10}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${ALB_PROTOCOL}://${ALB_DNS}/api/v1/health/")
+            if [ "$STATUS" = "200" ]; then
+              echo "Healthcheck passed (HTTP 200)"
+              exit 0
+            fi
+            echo "Attempt $i: status $STATUS, retrying..."
+            sleep 10
+          done
+          echo "::error::Healthcheck failed after 10 attempts"
+          exit 1
+
+      - name: Notify Slack (optional)
+        if: always() && env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@v1
+        with:
+          payload: |
+            {
+              "text": "${{ job.status == 'success' && '✅' || '❌' }} ${{ inputs.target_environment }} deployment ${{ job.status }} for multilingual-task-api (${{ github.sha }})"
+            }
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

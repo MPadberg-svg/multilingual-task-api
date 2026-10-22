@@ -2,16 +2,16 @@
 
 [![CI](https://github.com/MPadberg-svg/multilingual-task-api/actions/workflows/ci.yml/badge.svg)](https://github.com/MPadberg-svg/multilingual-task-api/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.12-blue?logo=python&logoColor=white)](https://python.org)
-[![Django](https://img.shields.io/badge/Django-5.1-092E20?logo=django&logoColor=white)](https://www.djangoproject.com/)
-[![DRF](https://img.shields.io/badge/DRF-3.15.2-red)](https://www.django-rest-framework.org/)
+[![Django](https://img.shields.io/badge/Django-5.2-092E20?logo=django&logoColor=white)](https://www.djangoproject.com/)
+[![DRF](https://img.shields.io/badge/DRF-3.17.1-red)](https://www.django-rest-framework.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7.0-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?logo=openai&logoColor=white)](https://openai.com/)
-[![Coverage](https://img.shields.io/badge/coverage-90%25-brightgreen)](https://codecov.io)
+[![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](https://codecov.io)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![AWS](https://img.shields.io/badge/AWS-ECS_Fargate-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/ecs/)
 
-**Production-grade multilingual REST API** for AI annotation platforms (Outlier AI, DataAnnotation, Mindrift/Toloka). Built with Django 5.1, PostgreSQL 16, Redis 7, Celery, Strawberry GraphQL, and OpenAI GPT-4o-mini. Deployed on AWS ECS Fargate via Terraform. Validated at **156 req/s with 96.3% cache hit rate**.
+**Production-grade multilingual REST API** for AI annotation platforms (Outlier AI, DataAnnotation, Mindrift/Toloka). Built with Django 5.2, PostgreSQL 16, Redis 7, Celery, Strawberry GraphQL, and OpenAI GPT-4o-mini. Deployed on AWS ECS Fargate via Terraform. Validated at **156 req/s with 96.3% cache hit rate**.
 
 ---
 
@@ -109,20 +109,21 @@ RDS PostgreSQL 16    ElastiCache Redis 7
 
 | Layer | Technology | Version | Purpose |
 |-------|-----------|---------|---------|
-| Framework | Django | 5.1 | Web framework + ORM |
-| API | Django REST Framework | 3.15.2 | REST API + OpenAPI 3.0 |
-| i18n | django-parler | 2.3 | Translatable models (EN / ES / FR) |
+| Framework | Django | 5.2.18 | Web framework + ORM |
+| API | Django REST Framework | 3.17.1 | REST API + OpenAPI 3.0 |
+| i18n | django-parler | 2.4.1 | Translatable models (EN / ES / FR) |
 | Cache | Redis | 7.0 | Caching, rate limiting, pub/sub |
-| Queue | Celery | 5.4.0 | Async task processing |
-| Real-Time | Django Channels | 4.1.0 | WebSocket connections |
-| GraphQL | Strawberry | 0.235.0 | Flexible client queries |
-| Auth | djangorestframework-simplejwt | 5.3.1 | JWT (30min access / 7-day refresh) |
+| Queue | Celery | 5.6.3 | Async task processing |
+| Real-Time | Django Channels | 4.3.2 | WebSocket connections |
+| GraphQL | Strawberry | 0.314.1 | Flexible client queries |
+| Auth | djangorestframework-simplejwt | 5.5.1 | JWT (30min access / 7-day refresh) |
 | Database | PostgreSQL | 16 | Primary data store |
-| AI | OpenAI GPT-4o-mini | 1.55+ | Translation, evaluation, RLHF |
-| Resilience | Circuit Breaker | custom | OpenAI failure isolation |
-| Docs | drf-spectacular | 0.27.0 | OpenAPI 3.0 / Swagger / ReDoc |
+| AI | OpenAI GPT-4o-mini | 2.31.0 | Translation, evaluation, RLHF |
+| Schemas | Pydantic | 2.13.3 | Structured LLM output validation |
+| Resilience | Circuit Breaker | custom | Single-flight OpenAI failure isolation |
+| Docs | drf-spectacular | 0.29.0 | OpenAPI 3.0 / Swagger / ReDoc |
 | Container | Docker | 24.x | Multi-stage builds |
-| Orchestration | AWS ECS Fargate | — | Serverless containers |
+| Orchestration | AWS ECS Fargate | — | Serverless API + Celery containers |
 | IaC | Terraform | 1.5+ | VPC, RDS, ElastiCache, ALB, CF |
 | CI/CD | GitHub Actions | — | Lint → Test → Security → Deploy |
 
@@ -603,7 +604,7 @@ make locust-headless    # Headless: 50 users, 60s run, CSV output
 
 The `config.settings.testing` module is selected automatically via `pytest.ini` (`DJANGO_SETTINGS_MODULE`). This means the full test suite runs with **zero infrastructure** — no PostgreSQL, no Redis, no Docker.
 
-### Test Suite (132 tests)
+### Test Suite (178 tests · 91.56% coverage)
 
 | Module | Tests | Covers |
 |--------|-------|--------|
@@ -675,23 +676,19 @@ make setup             # Full setup in one command
 
 ```bash
 cd terraform/
+cp terraform.tfvars.example production.tfvars  # Populate secrets ARNs, domain, and RDS password
 
 # Initialize providers
 terraform init
 
-# Create production workspace
-terraform workspace new production
+# Validate configuration
+terraform validate
 
 # Preview changes
-terraform plan -var="environment=production"
+terraform plan -var-file="production.tfvars" -out=tfplan
 
-# Apply (provisions ECS, RDS, ElastiCache, ALB, CloudFront)
-terraform apply -var="environment=production"
-
-# Outputs:
-# alb_dns_name      = multilingual-task-api-alb-xxx.us-east-1.elb.amazonaws.com
-# cloudfront_domain = dxxx.cloudfront.net
-# ecr_repository_url = 123456789.dkr.ecr.us-east-1.amazonaws.com/multilingual-task-api
+# Apply (provisions ECS API + Celery, RDS, ElastiCache, ALB, CloudFront)
+terraform apply tfplan
 ```
 
 ### AWS Infrastructure

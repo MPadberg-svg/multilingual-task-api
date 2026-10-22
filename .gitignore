@@ -60,8 +60,14 @@ media/
 celerybeat-schedule
 celerybeat.pid
 
-# Secrets
+# Secrets & Terraform state/vars
 *.pem
 *.key
 secrets.json
 credentials.json
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.*
+terraform/*.tfvars
+!terraform/*.tfvars.example
+terraform/tfplan

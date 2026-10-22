@@ -1,21 +1,61 @@
 output "alb_dns_name" {
-  value = aws_lb.main.dns_name
-}
-
-output "rds_endpoint" {
-  value     = aws_db_instance.postgres.endpoint
-  sensitive = true
-}
-
-output "redis_endpoint" {
-  value     = aws_elasticache_replication_group.redis.primary_endpoint_address
-  sensitive = true
-}
-
-output "ecr_repository_url" {
-  value = aws_ecr_repository.api.repository_url
+  description = "Public DNS name of the Application Load Balancer"
+  value       = aws_lb.main.dns_name
 }
 
 output "cloudfront_domain" {
-  value = aws_cloudfront_distribution.cdn.domain_name
+  description = "CloudFront distribution domain name"
+  value       = aws_cloudfront_distribution.cdn.domain_name
+}
+
+output "ecr_repository_url" {
+  description = "ECR repository URL for immutable API/Celery container images"
+  value       = aws_ecr_repository.api.repository_url
+}
+
+output "ecs_cluster_name" {
+  description = "ECS cluster name (maps to GitHub Actions vars.ECS_CLUSTER)"
+  value       = aws_ecs_cluster.main.name
+}
+
+output "ecs_api_service_name" {
+  description = "ECS API service name (maps to GitHub Actions vars.ECS_SERVICE)"
+  value       = aws_ecs_service.api.name
+}
+
+output "ecs_celery_service_name" {
+  description = "ECS Celery worker service name (maps to GitHub Actions vars.ECS_CELERY_SERVICE)"
+  value       = aws_ecs_service.celery_worker.name
+}
+
+output "ecs_api_task_family" {
+  description = "ECS API task definition family (maps to GitHub Actions vars.ECS_TASK_DEFINITION)"
+  value       = aws_ecs_task_definition.api.family
+}
+
+output "ecs_celery_task_family" {
+  description = "ECS Celery worker task definition family (maps to GitHub Actions vars.ECS_CELERY_TASK_DEFINITION)"
+  value       = aws_ecs_task_definition.celery_worker.family
+}
+
+output "private_subnet_ids" {
+  description = "Comma-joinable private subnet IDs for one-off migration/cache ECS tasks"
+  value       = module.vpc.private_subnets
+}
+
+output "ecs_security_group_id" {
+  description = "Security group ID attached to ECS tasks"
+  value       = aws_security_group.ecs.id
+}
+
+output "rds_endpoint" {
+  description = "RDS PostgreSQL endpoint"
+  value       = aws_db_instance.postgres.endpoint
+  sensitive   = true
+}
+
+output "redis_endpoint" {
+  description = "ElastiCache Redis primary endpoint"
+  value       = aws_elasticache_replication_group.redis.primary_endpoint_address
+  sensitive   = true
 }
