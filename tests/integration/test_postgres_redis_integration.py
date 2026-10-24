@@ -855,3 +855,128 @@ def test_live_postgres_audit_checkpoint_rls_and_replica_routing() -> None:
         assert [row["id"] for row in list_resp.json()["results"]] == [str(ckpt_a.id)]
     finally:
         connections.close_all()
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "replica"])
+def test_live_postgres_ed25519_bundle_replica_rls_and_redis_broker_queue_telemetry() -> None:
+    """Verify Ed25519 checkpoint bundle replica RLS, active-learning SKIP LOCKED & Redis LLEN."""
+    from django.test import override_settings
+
+    import redis as redis_py
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from apps.core.audit_chain import verify_checkpoint_offline_bundle
+    from apps.core.views import collect_async_backlog_telemetry
+
+    suffix = uuid.uuid4().hex[:8]
+    owner_a = User.objects.create_user(
+        email=f"v1100-owner-a-{suffix}@example.com", password="Password123!"
+    )
+    owner_b = User.objects.create_user(
+        email=f"v1100-owner-b-{suffix}@example.com", password="Password123!"
+    )
+    org_a = Organization.objects.create(
+        name=f"V1100 Org A {suffix}", slug=f"v1100-org-a-{suffix}", plan="enterprise"
+    )
+    org_b = Organization.objects.create(
+        name=f"V1100 Org B {suffix}", slug=f"v1100-org-b-{suffix}", plan="enterprise"
+    )
+    OrganizationMember.objects.create(user=owner_a, organization=org_a, role="owner")
+    OrganizationMember.objects.create(user=owner_b, organization=org_b, role="owner")
+
+    ed_priv = Ed25519PrivateKey.generate()
+    ed_priv_pem = ed_priv.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
+
+    # Seed low-uncertainty vs high-uncertainty tasks on PostgreSQL 16
+    t_low = Task.objects.create(
+        user=owner_a,
+        organization=org_a,
+        priority="high",
+        uncertainty_score=0.15,
+    )
+    t_low.set_current_language("en")
+    t_low.title = "Low Entropy Task"
+    t_low.save()
+
+    t_high = Task.objects.create(
+        user=owner_a,
+        organization=org_a,
+        priority="high",
+        uncertainty_score=0.91,
+        auto_escalated=True,
+    )
+    t_high.set_current_language("en")
+    t_high.title = "High Entropy Task"
+    t_high.save()
+
+    AuditLog.objects.create(
+        organization=org_a,
+        user=owner_a,
+        action="created",
+        resource_type="Task",
+        resource_id=str(t_high.id),
+    )
+
+    broker_client = redis_py.Redis.from_url(settings.CELERY_BROKER_URL)
+    try:
+        broker_client.delete("celery", "default", "tasks", "ai")
+        broker_client.rpush("tasks", "job-1", "job-2", "job-3")
+        broker_client.rpush("ai", "judge-1", "judge-2")
+
+        backlog = collect_async_backlog_telemetry()
+        assert backlog["celery_queues"]["tasks"] == 3
+        assert backlog["celery_queues"]["ai"] == 2
+        assert backlog["celery_queue_depth_total"] >= 5
+
+        with override_settings(AUDIT_ANCHOR_ED25519_PRIVATE_KEY_PEM=ed_priv_pem):
+            ckpt_a, created = create_organization_audit_checkpoint(org_a)
+            assert created is True and ckpt_a is not None
+            assert ckpt_a.signature_algorithm == "Ed25519"
+
+            token_a = str(RefreshToken.for_user(owner_a).access_token)
+            token_b = str(RefreshToken.for_user(owner_b).access_token)
+            client_a = APIClient()
+            client_a.credentials(
+                HTTP_AUTHORIZATION=f"Bearer {token_a}",
+                HTTP_X_ORGANIZATION_ID=str(org_a.id),
+            )
+            client_b = APIClient()
+            client_b.credentials(
+                HTTP_AUTHORIZATION=f"Bearer {token_b}",
+                HTTP_X_ORGANIZATION_ID=str(org_b.id),
+            )
+
+            # Cross-tenant bundle fetch returns 404; owner_a replica-routed bundle succeeds!
+            assert (
+                client_b.get(
+                    f"/api/v1/organizations/{org_b.id}/audit-logs/checkpoints/{ckpt_a.id}/bundle/"
+                ).status_code
+                == 404
+            )
+            bundle_resp = client_a.get(
+                f"/api/v1/organizations/{org_a.id}/audit-logs/checkpoints/{ckpt_a.id}/bundle/"
+            )
+            assert bundle_resp.status_code == 200
+            assert bundle_resp.headers["X-Query-Target"] == "replica"
+            bundle = bundle_resp.json()
+            assert bundle["offline_verification"]["valid"] is True
+            assert (
+                verify_checkpoint_offline_bundle(bundle["checkpoint"], bundle["public_key_pem"])[
+                    "valid"
+                ]
+                is True
+            )
+
+            # PostgreSQL 16 FOR UPDATE SKIP LOCKED claim acquires highest uncertainty_score first!
+            claimed = client_a.post("/api/v1/tasks/claim/", {}, format="json")
+            assert claimed.status_code == 200
+            assert claimed.json()["id"] == str(t_high.id)
+    finally:
+        broker_client.delete("celery", "default", "tasks", "ai")
+        broker_client.close()
+        connections.close_all()

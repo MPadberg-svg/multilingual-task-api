@@ -34,6 +34,7 @@ VALID_WEBHOOK_EVENTS: frozenset[str] = frozenset(
         "task.deleted",
         "task.consensus_reached",
         "task.translated",
+        "task.uncertainty_escalated",
         "webhook.ping",
         "ai.budget_threshold_reached",
         "ai.budget_exceeded",
@@ -402,6 +403,7 @@ class AuditLog(models.Model):
             ("task_claimed", "Task Claimed"),
             ("task_annotated", "Task Annotated"),
             ("task_adjudicated", "Task Adjudicated"),
+            ("task_uncertainty_triaged", "Task Uncertainty Triaged"),
             ("gold_task_evaluated", "Gold Calibration Task Evaluated"),
             ("audit_checkpoint_anchored", "Audit Chain Checkpoint Anchored"),
             ("exported", "Dataset Exported"),
@@ -455,6 +457,12 @@ class AuditChainCheckpoint(models.Model):
         ("anchor_error", "External Anchor Error"),
     ]
 
+    SIGNATURE_ALGORITHM_CHOICES = [
+        ("HMAC-SHA256", "HMAC-SHA256"),
+        ("Ed25519", "Ed25519"),
+        ("KMS-ECDSA-SHA256", "AWS KMS ECDSA-SHA256"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     organization = models.ForeignKey(
         Organization,
@@ -469,6 +477,13 @@ class AuditChainCheckpoint(models.Model):
     prev_checkpoint_hash = models.CharField(max_length=64, default="0" * 64)
     checkpoint_hash = models.CharField(max_length=64, db_index=True)
     signature = models.CharField(max_length=64)
+    signature_algorithm = models.CharField(
+        max_length=32,
+        choices=SIGNATURE_ALGORITHM_CHOICES,
+        default="HMAC-SHA256",
+    )
+    public_key_fingerprint = models.CharField(max_length=64, blank=True, default="")
+    asymmetric_signature = models.CharField(max_length=512, blank=True, default="")
     anchor_status = models.CharField(
         max_length=32,
         choices=ANCHOR_STATUS_CHOICES,

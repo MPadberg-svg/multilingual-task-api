@@ -18,7 +18,7 @@ variable "environment" {
 variable "image_tag" {
   description = "Immutable container image tag (e.g. git SHA or release tag)"
   type        = string
-  default     = "v1.9.0"
+  default     = "v1.10.0"
 }
 
 variable "domain_name" {
@@ -191,6 +191,30 @@ variable "celery_max_capacity" {
   description = "Maximum auto-scaled ECS Fargate Celery worker count"
   type        = number
   default     = 6
+}
+
+variable "enable_audit_kms_signing" {
+  description = "Provision an asymmetric AWS KMS ECC_NIST_P256 SIGN_VERIFY key for AuditChainCheckpoint public-key transparency"
+  type        = bool
+  default     = true
+}
+
+variable "celery_backlog_target_per_worker" {
+  description = "Target AsyncBacklogDepth (Celery queues + pending Outbox) for proactive Celery autoscaling"
+  type        = number
+  default     = 50
+}
+
+variable "celery_backlog_alarm_threshold" {
+  description = "CloudWatch alarm threshold on AsyncBacklogDepth before alerting SNS"
+  type        = number
+  default     = 250
+}
+
+variable "active_learning_entropy_threshold" {
+  description = "Normalized Shannon/margin uncertainty score threshold promoting RLHF pairs to difficulty=expert"
+  type        = number
+  default     = 0.78
 }
 
 variable "redis_node_type" {

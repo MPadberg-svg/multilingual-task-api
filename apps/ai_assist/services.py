@@ -27,6 +27,7 @@ from apps.ai_assist.circuit_breaker import CircuitOpenError, openai_circuit_brea
 from apps.ai_assist.prompt_templates import SYSTEM_GUARDRAIL_PROMPT, PromptTemplateManager
 from apps.ai_assist.schemas import (
     PromptQualitySchema,
+    RLHFJudgeEvaluationSchema,
     RLHFTestCaseSchema,
     TranslationSuggestionSchema,
 )
@@ -34,6 +35,7 @@ from apps.core.finops import AIBudgetExceededError, enforce_org_ai_budget
 from apps.core.security import InputValidator
 from apps.core.tracing import start_span
 from apps.core.views import record_ai_token_usage, record_cache_hit, record_cache_miss
+from apps.tasks.uncertainty import compute_preference_uncertainty
 
 logger = logging.getLogger(__name__)
 
@@ -324,6 +326,84 @@ class AIService:
         result = validated.model_dump()
         cache.set(cache_key, result, timeout=CACHE_TTL_AI)
         return result
+
+    def judge_rlhf_pair(
+        self,
+        user_id: str,
+        lang: str,
+        prompt_text: str,
+        response_a: str,
+        response_b: str,
+        *,
+        domain: str = "general",
+        organization_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate an RLHF response pair and compute active-learning Shannon/margin uncertainty."""
+        clean_prompt = self._validate_prose_input(prompt_text)
+        clean_a = self._validate_prose_input(response_a)
+        clean_b = self._validate_prose_input(response_b)
+        clean_domain = (domain or "general").strip().lower()[:24]
+        version = self.template_manager.get_version("rlhf_judge")
+
+        cache_key = _make_cache_key(
+            user_id,
+            lang,
+            {
+                "fn": "judge",
+                "v": version,
+                "d": clean_domain,
+                "p": clean_prompt,
+                "a": clean_a,
+                "b": clean_b,
+            },
+        )
+        cached = cache.get(cache_key)
+        if cached is not None:
+            record_cache_hit()
+            cached_dict = dict(cached)
+            # Re-evaluate threshold dynamically against current ACTIVE_LEARNING_ENTROPY_THRESHOLD
+            uncertainty = compute_preference_uncertainty(cached_dict["choice_probabilities"])
+            return {**cached_dict, **uncertainty}
+
+        record_cache_miss()
+        enforce_org_ai_budget(organization_id)
+        rendered = self.template_manager.render(
+            "rlhf_judge",
+            user_input=clean_prompt,
+            response_a=clean_a,
+            response_b=clean_b,
+            domain=clean_domain,
+            lang=lang,
+        )
+        org_tok = _ACTIVE_ORG_ID.set(organization_id)
+        usr_tok = _ACTIVE_USER_ID.set(user_id)
+        op_tok = _ACTIVE_OPERATION.set("judge_rlhf_pair")
+        try:
+            raw = self._call_llm(rendered, temperature=0.1)
+        finally:
+            _ACTIVE_OPERATION.reset(op_tok)
+            _ACTIVE_USER_ID.reset(usr_tok)
+            _ACTIVE_ORG_ID.reset(org_tok)
+
+        parsed = _safe_json_parse(raw)
+        if not parsed:
+            raise UpstreamAIResponseError("Empty or malformed JSON from AI provider")
+
+        try:
+            validated = RLHFJudgeEvaluationSchema.model_validate(parsed)
+        except PydanticValidationError as exc:
+            logger.warning("AI RLHF judge schema validation failed: %s", exc)
+            raise UpstreamAIResponseError("AI response failed schema validation") from exc
+
+        uncertainty = compute_preference_uncertainty(validated.choice_probabilities.model_dump())
+        base_payload: dict[str, Any] = {
+            "preference": validated.preference,
+            "choice_probabilities": uncertainty["normalized_probabilities"],
+            "rationale": validated.rationale,
+            "domain": clean_domain,
+        }
+        cache.set(cache_key, base_payload, timeout=CACHE_TTL_AI)
+        return {**base_payload, **uncertainty}
 
     def _parse_json_response(self, raw: str) -> dict[str, Any]:
         """Internal JSON parser maintained for direct unit test compatibility."""

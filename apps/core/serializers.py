@@ -191,7 +191,7 @@ class AuditLogSerializer(serializers.ModelSerializer):
 
 
 class AuditChainCheckpointSerializer(serializers.ModelSerializer):
-    """Read-only representation of HMAC-signed & S3 WORM notarized audit checkpoints."""
+    """Read-only representation of HMAC, Ed25519/KMS & S3 WORM notarized audit checkpoints."""
 
     class Meta:
         model = AuditChainCheckpoint
@@ -206,6 +206,9 @@ class AuditChainCheckpointSerializer(serializers.ModelSerializer):
             "prev_checkpoint_hash",
             "checkpoint_hash",
             "signature",
+            "signature_algorithm",
+            "public_key_fingerprint",
+            "asymmetric_signature",
             "anchor_status",
             "worm_uri",
             "worm_etag",

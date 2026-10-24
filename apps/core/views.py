@@ -14,6 +14,7 @@ from django.db.utils import DatabaseError, OperationalError
 from django.http import HttpResponse
 from django.utils import timezone
 
+import redis
 from django_redis import get_redis_connection
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
@@ -30,6 +31,8 @@ from apps.core.rls import rls_bypass
 from apps.core.throttling import HealthCheckAnonRateThrottle
 
 logger = logging.getLogger(__name__)
+
+CELERY_MONITORED_QUEUES: tuple[str, str, str, str] = ("celery", "default", "tasks", "ai")
 
 REQUEST_COUNT_KEY = "mltask:metrics:requests_total"
 CACHE_HIT_KEY = "mltask:metrics:cache_hits"
@@ -124,6 +127,73 @@ def record_ai_token_usage(
             operation=operation,
             model_name=model_name,
         )
+
+
+def _probe_celery_broker_queue_depths() -> dict[str, int]:
+    """Read live Redis Celery list lengths in a single pipeline RTT when Redis is active."""
+    depths = {q: 0 for q in CELERY_MONITORED_QUEUES}
+    try:
+        default_redis = get_redis_connection("default")
+    except (NotImplementedError, RedisError, Exception):
+        return depths
+
+    broker_url = str(getattr(settings, "CELERY_BROKER_URL", "") or "").strip()
+    if broker_url.startswith(("redis://", "rediss://")):
+        broker_client: Any = redis.Redis.from_url(
+            broker_url,
+            socket_connect_timeout=0.5,
+            socket_timeout=0.5,
+        )
+        try:
+            pipe = broker_client.pipeline(transaction=False)
+            for q_name in CELERY_MONITORED_QUEUES:
+                pipe.llen(q_name)
+            raw_lengths = pipe.execute()
+            for q_name, raw_len in zip(CELERY_MONITORED_QUEUES, raw_lengths):
+                depths[q_name] = max(0, _coerce_int(raw_len))
+            return depths
+        except (RedisError, OSError, Exception):
+            logger.debug("Skipping Celery broker queue-depth probe due to transient Redis error.")
+            return depths
+        finally:
+            try:
+                broker_client.close()
+            except Exception:
+                logger.debug("Ignored error closing Celery broker probe client.")
+
+    try:
+        pipe = default_redis.pipeline(transaction=False)
+        for q_name in CELERY_MONITORED_QUEUES:
+            pipe.llen(q_name)
+        raw_lengths = pipe.execute()
+        for q_name, raw_len in zip(CELERY_MONITORED_QUEUES, raw_lengths):
+            depths[q_name] = max(0, _coerce_int(raw_len))
+    except (RedisError, Exception):
+        logger.debug("Skipping fallback Redis queue-depth probe.")
+    return depths
+
+
+def collect_async_backlog_telemetry() -> dict[str, Any]:
+    """Collect Outbox + Celery Redis queue-depth telemetry for Prometheus & ECS autoscaling."""
+    outbox_pending = 0
+    outbox_dead_letter = 0
+    try:
+        with rls_bypass():
+            outbox_pending = OutboxEvent.objects.filter(status="pending").count()
+            outbox_dead_letter = OutboxEvent.objects.filter(status="failed").count()
+    except (DatabaseError, OperationalError):
+        logger.debug("Skipping Outbox backlog gauges due to transient DB unavailability.")
+
+    queue_depths = _probe_celery_broker_queue_depths()
+    celery_total = sum(queue_depths.values())
+    async_backlog_total = outbox_pending + celery_total
+    return {
+        "outbox_pending": outbox_pending,
+        "outbox_dead_letter": outbox_dead_letter,
+        "celery_queues": queue_depths,
+        "celery_queue_depth_total": celery_total,
+        "async_backlog_total": async_backlog_total,
+    }
 
 
 def get_org_ai_usage(organization_id: str) -> dict[str, int | float]:
@@ -425,14 +495,12 @@ class MetricsView(APIView):
             f"mltask_ai_estimated_cost_usd_total {ai_cost_usd:.6f}",
         ]
 
-        outbox_pending = 0
-        outbox_dead_letter = 0
-        try:
-            with rls_bypass():
-                outbox_pending = OutboxEvent.objects.filter(status="pending").count()
-                outbox_dead_letter = OutboxEvent.objects.filter(status="failed").count()
-        except (DatabaseError, OperationalError):
-            logger.debug("Skipping Outbox Prometheus gauges due to transient DB unavailability.")
+        backlog = collect_async_backlog_telemetry()
+        outbox_pending = int(backlog["outbox_pending"])
+        outbox_dead_letter = int(backlog["outbox_dead_letter"])
+        celery_queues: dict[str, int] = backlog["celery_queues"]
+        celery_total = int(backlog["celery_queue_depth_total"])
+        async_backlog_total = int(backlog["async_backlog_total"])
 
         metrics.extend(
             [
@@ -442,6 +510,18 @@ class MetricsView(APIView):
                 "# HELP mltask_outbox_dead_letter_events Current dead-letter Outbox events.",
                 "# TYPE mltask_outbox_dead_letter_events gauge",
                 f"mltask_outbox_dead_letter_events {outbox_dead_letter}",
+                "# HELP mltask_celery_queue_depth Current Redis broker queue length by queue.",
+                "# TYPE mltask_celery_queue_depth gauge",
+                *[
+                    f'mltask_celery_queue_depth{{queue="{q_name}"}} {q_len}'
+                    for q_name, q_len in celery_queues.items()
+                ],
+                "# HELP mltask_celery_queue_depth_total Total queued Celery tasks across queues.",
+                "# TYPE mltask_celery_queue_depth_total gauge",
+                f"mltask_celery_queue_depth_total {celery_total}",
+                "# HELP mltask_async_backlog_total Combined Celery queue + pending Outbox backlog.",
+                "# TYPE mltask_async_backlog_total gauge",
+                f"mltask_async_backlog_total {async_backlog_total}",
             ]
         )
         return HttpResponse(

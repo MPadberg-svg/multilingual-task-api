@@ -85,6 +85,16 @@ output "audit_worm_bucket_name" {
   value       = try(aws_s3_bucket.audit_worm[0].bucket, "")
 }
 
+output "audit_kms_key_arn" {
+  description = "AWS KMS asymmetric ECC_NIST_P256 SIGN_VERIFY key ARN for AuditChainCheckpoint transparency"
+  value       = try(aws_kms_key.audit_anchor[0].arn, "")
+}
+
+output "celery_backlog_autoscaling_policy_arn" {
+  description = "Application Auto Scaling policy ARN scaling Celery workers on AsyncBacklogDepth"
+  value       = aws_appautoscaling_policy.celery_backlog.arn
+}
+
 output "canary_composite_alarm_arn" {
   description = "CloudWatch Composite Alarm ARN gating ECS API canary deployments"
   value       = aws_cloudwatch_composite_alarm.canary_rollout_guard.arn

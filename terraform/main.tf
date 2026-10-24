@@ -444,12 +444,52 @@ resource "aws_iam_role_policy" "ecs_task_audit_worm" {
   })
 }
 
+resource "aws_kms_key" "audit_anchor" {
+  count = var.enable_audit_kms_signing ? 1 : 0
+
+  description              = "Asymmetric ECDSA P-256 signing key for AuditChainCheckpoint transparency"
+  key_usage                = "SIGN_VERIFY"
+  customer_master_key_spec = "ECC_NIST_P256"
+  deletion_window_in_days  = 30
+
+  tags = var.common_tags
+}
+
+resource "aws_kms_alias" "audit_anchor" {
+  count = var.enable_audit_kms_signing ? 1 : 0
+
+  name          = "alias/${var.project_name}-${var.environment}-audit-anchor"
+  target_key_id = aws_kms_key.audit_anchor[0].key_id
+}
+
+resource "aws_iam_role_policy" "ecs_task_audit_kms" {
+  count = var.enable_audit_kms_signing ? 1 : 0
+  name  = "${var.project_name}-ecs-task-audit-kms"
+  role  = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:GetPublicKey",
+          "kms:Sign",
+          "kms:Verify",
+        ]
+        Resource = aws_kms_key.audit_anchor[0].arn
+      },
+    ]
+  })
+}
+
 locals {
   enable_origin_cloaking = nonsensitive(var.origin_verify_secret != "")
   redis_tls_base_url     = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
   github_oidc_arn        = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
   postgres_replica_host  = var.enable_read_replica ? aws_db_instance.postgres_replica[0].address : ""
   audit_worm_bucket_name = var.enable_audit_worm_bucket ? aws_s3_bucket.audit_worm[0].bucket : ""
+  audit_kms_key_arn      = var.enable_audit_kms_signing ? aws_kms_key.audit_anchor[0].arn : ""
   alarm_actions          = var.alert_sns_topic_arn != "" ? [var.alert_sns_topic_arn] : []
   canary_rollback_alarms = [
     aws_cloudwatch_metric_alarm.alb_target_5xx.alarm_name,
@@ -479,6 +519,9 @@ locals {
     { name = "AUDIT_WORM_S3_BUCKET", value = local.audit_worm_bucket_name },
     { name = "AUDIT_WORM_S3_REGION", value = var.aws_region },
     { name = "AUDIT_WORM_RETENTION_DAYS", value = tostring(var.audit_worm_retention_days) },
+    { name = "AUDIT_ANCHOR_KMS_KEY_ID", value = local.audit_kms_key_arn },
+    { name = "AUDIT_ANCHOR_KMS_SIGNING_ALG", value = "ECDSA_SHA_256" },
+    { name = "ACTIVE_LEARNING_ENTROPY_THRESHOLD", value = tostring(var.active_learning_entropy_threshold) },
   ]
   shared_secrets = compact([
     var.django_secret_key_arn != "" ? jsonencode({ name = "SECRET_KEY", valueFrom = var.django_secret_key_arn }) : "",
@@ -763,6 +806,25 @@ resource "aws_appautoscaling_policy" "celery_cpu" {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
     }
     target_value       = 70.0
+    scale_in_cooldown  = 180
+    scale_out_cooldown = 60
+  }
+}
+
+resource "aws_appautoscaling_policy" "celery_backlog" {
+  name               = "${var.project_name}-celery-backlog-autoscaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.celery_worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.celery_worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.celery_worker.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    customized_metric_specification {
+      metric_name = "AsyncBacklogDepth"
+      namespace   = "${var.project_name}/Async"
+      statistic   = "Average"
+    }
+    target_value       = var.celery_backlog_target_per_worker
     scale_in_cooldown  = 180
     scale_out_cooldown = 60
   }
@@ -1153,6 +1215,35 @@ resource "aws_cloudwatch_composite_alarm" "canary_rollout_guard" {
   alarm_rule        = "ALARM(${aws_cloudwatch_metric_alarm.alb_target_5xx.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.outbox_dead_letter.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.rds_primary_cpu.alarm_name})"
   alarm_actions     = local.alarm_actions
   ok_actions        = local.alarm_actions
+
+  tags = var.common_tags
+}
+
+resource "aws_cloudwatch_log_metric_filter" "async_backlog_depth" {
+  name           = "${var.project_name}-async-backlog-depth"
+  pattern        = "{ $.event = \"AsyncBacklogTelemetry\" }"
+  log_group_name = aws_cloudwatch_log_group.api.name
+
+  metric_transformation {
+    name      = "AsyncBacklogDepth"
+    namespace = "${var.project_name}/Async"
+    value     = "$.AsyncBacklogDepth"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "celery_backlog_high" {
+  alarm_name          = "${var.project_name}-celery-backlog-high"
+  alarm_description   = "Combined Celery Redis queue and Outbox pending backlog exceeded threshold"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "AsyncBacklogDepth"
+  namespace           = "${var.project_name}/Async"
+  period              = 60
+  statistic           = "Average"
+  threshold           = var.celery_backlog_alarm_threshold
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
 
   tags = var.common_tags
 }

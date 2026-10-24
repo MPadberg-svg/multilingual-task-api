@@ -8,6 +8,7 @@ from typing import Any
 from apps.core.outbox import enqueue_outbox_event
 from apps.tasks.calibration import resolve_effective_skill_weight
 from apps.tasks.models import AnnotatorCalibration, Task, TaskAnnotation
+from apps.tasks.uncertainty import compute_preference_uncertainty
 
 
 def _score_val(ann: TaskAnnotation, key: str) -> float | None:
@@ -89,9 +90,12 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
 
     consensus_reached = False
     awaiting_adjudication = False
+    uncertainty_meta = compute_preference_uncertainty(weighted_totals)
     task.claimed_by = None
     task.claimed_until = None
     task.consensus_score = agreement_ratio
+    task.uncertainty_score = float(uncertainty_meta["uncertainty_score"])
+    escalated_on_split = False
 
     if total >= task.required_annotations:
         if has_unique_leader and agreement_ratio > 0.5:
@@ -103,6 +107,10 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
             task.consensus_choice = ""
             if task.status == "pending":
                 task.status = "in_progress"
+            if not task.is_gold and (task.difficulty != "expert" or not task.auto_escalated):
+                task.difficulty = "expert"
+                task.auto_escalated = True
+                escalated_on_split = True
     else:
         task.consensus_choice = ""
         if task.status == "pending":
@@ -114,10 +122,27 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
             "claimed_until",
             "consensus_score",
             "consensus_choice",
+            "uncertainty_score",
+            "difficulty",
+            "auto_escalated",
             "status",
             "updated_at",
         ]
     )
+
+    if escalated_on_split and task.organization_id:
+        enqueue_outbox_event(
+            organization_id=str(task.organization_id),
+            event_type="task.uncertainty_escalated",
+            payload={
+                "task_id": str(task.id),
+                "reason": "split_vote_deadlock",
+                "uncertainty_score": task.uncertainty_score,
+                "shannon_entropy": uncertainty_meta["shannon_entropy"],
+                "difficulty": task.difficulty,
+                "annotation_count": total,
+            },
+        )
 
     if consensus_reached and task.organization_id:
         org_id = str(task.organization_id)
@@ -150,6 +175,9 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
         "consensus_choice": task.consensus_choice,
         "consensus_score": task.consensus_score,
         "unweighted_agreement_score": unweighted_ratio,
+        "uncertainty_score": task.uncertainty_score,
+        "shannon_entropy": uncertainty_meta["shannon_entropy"],
+        "auto_escalated": task.auto_escalated,
         "skill_weighted": bool(cal_map),
         "domain": task.domain,
         "difficulty": task.difficulty,

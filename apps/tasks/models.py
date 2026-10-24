@@ -117,6 +117,8 @@ class Task(TranslatableModel):  # type: ignore[misc]
         blank=True,
         default="",
     )
+    uncertainty_score = models.FloatField(null=True, blank=True, db_index=True)
+    auto_escalated = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

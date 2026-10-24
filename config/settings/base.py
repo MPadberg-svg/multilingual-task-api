@@ -211,13 +211,14 @@ SPECTACULAR_SETTINGS: dict[str, Any] = {
     "TITLE": "Multilingual Task API",
     "DESCRIPTION": (
         "Production-grade multi-tenant REST & WebSocket API for multilingual RLHF task "
-        "orchestration, atomic annotation leasing, inter-annotator consensus, OpenAI FinOps "
-        "token/spend budget governance, OIDC SSO & SCIM 2.0 enterprise provisioning, scoped "
-        "M2M API keys, HMAC-signed webhooks, transactional outbox relay with dead-letter "
-        "replay, PostgreSQL Row-Level Security (RLS), read-replica query routing, pg_trgm "
-        "search, plan-tiered rate limiting, keyset cursor pagination, and W3C/OTLP tracing."
+        "orchestration, atomic annotation leasing, Bayesian specialist skill-weighted "
+        "consensus, active-learning LLM judge uncertainty routing, OpenAI FinOps budget "
+        "governance, OIDC SSO & SCIM 2.0 provisioning, scoped M2M API keys, HMAC-signed "
+        "webhooks, transactional outbox relay, SHA-256 + Ed25519/KMS WORM S3 audit "
+        "checkpointing, PostgreSQL Row-Level Security (RLS), read-replica query routing, "
+        "pg_trgm search, plan-tiered rate limiting, keyset cursor pagination, and W3C/OTLP tracing."
     ),
-    "VERSION": "1.7.0",
+    "VERSION": "1.10.0",
     "SERVE_INCLUDE_SCHEMA": False,
     "ENUM_NAME_OVERRIDES": {
         "AssignableRoleEnum": [
@@ -346,6 +347,18 @@ AUDIT_WORM_S3_REGION: str = config("AUDIT_WORM_S3_REGION", default="us-east-1").
 AUDIT_WORM_S3_ENDPOINT_HOST: str = config("AUDIT_WORM_S3_ENDPOINT_HOST", default="").strip()
 AUDIT_WORM_RETENTION_DAYS: int = config("AUDIT_WORM_RETENTION_DAYS", default=365, cast=int)
 AUDIT_ANCHOR_SIGNING_KEY: str = config("AUDIT_ANCHOR_SIGNING_KEY", default="").strip()
+AUDIT_ANCHOR_ED25519_PRIVATE_KEY_PEM: str = config(
+    "AUDIT_ANCHOR_ED25519_PRIVATE_KEY_PEM", default=""
+).strip()
+AUDIT_ANCHOR_PUBLIC_KEY_PEM: str = config("AUDIT_ANCHOR_PUBLIC_KEY_PEM", default="").strip()
+AUDIT_ANCHOR_KMS_KEY_ID: str = config("AUDIT_ANCHOR_KMS_KEY_ID", default="").strip()
+AUDIT_ANCHOR_KMS_SIGNING_ALG: str = config(
+    "AUDIT_ANCHOR_KMS_SIGNING_ALG", default="ECDSA_SHA_256"
+).strip()
+AUDIT_ANCHOR_KMS_ENDPOINT_HOST: str = config("AUDIT_ANCHOR_KMS_ENDPOINT_HOST", default="").strip()
+ACTIVE_LEARNING_ENTROPY_THRESHOLD: float = config(
+    "ACTIVE_LEARNING_ENTROPY_THRESHOLD", default=0.78, cast=float
+)
 
 CELERY_BEAT_SCHEDULE: dict[str, dict[str, Any]] = {
     "drain-transactional-outbox": {
@@ -362,6 +375,10 @@ CELERY_BEAT_SCHEDULE: dict[str, dict[str, Any]] = {
         "task": "apps.tasks.tasks.anchor_audit_chain_checkpoints",
         "schedule": 3600.0,
         "kwargs": {"batch_size": 100},
+    },
+    "emit-backlog-autoscaling-telemetry": {
+        "task": "apps.tasks.tasks.emit_backlog_autoscaling_telemetry",
+        "schedule": 60.0,
     },
 }
 

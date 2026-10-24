@@ -7,7 +7,7 @@
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
 [![Redis](https://img.shields.io/badge/Redis-7.0-DC382D?logo=redis&logoColor=white)](https://redis.io/)
 [![OpenAI](https://img.shields.io/badge/OpenAI-GPT--4o--mini-412991?logo=openai&logoColor=white)](https://openai.com/)
-[![Version](https://img.shields.io/badge/release-v1.9.0-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
+[![Version](https://img.shields.io/badge/release-v1.10.0-blue)](https://github.com/MPadberg-svg/multilingual-task-api/releases)
 [![Coverage](https://img.shields.io/badge/coverage-92%25-brightgreen)](https://codecov.io)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![AWS](https://img.shields.io/badge/AWS-ECS_Fargate-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/ecs/)
@@ -44,8 +44,8 @@ The Multilingual Task API solves the core infrastructure challenge of AI annotat
 
 **Key capabilities:**
 
-- **Multilingual RLHF Pipeline, Blind Gold Calibration & Domain Specialist Routing** — Atomic priority- & specialist-ranked task leasing (`POST /api/v1/tasks/claim/` with blind gold-task injection, domain/difficulty routing, and probation gating on `expert` tasks), structured preference & 1–5 rubric annotations (`POST /api/v1/tasks/{id}/annotations/`), multi-dimensional per-domain & per-language Bayesian skill-weighted Inter-Annotator Agreement (`AnnotatorCalibration` leaderboard at `/annotators/calibration/?domain=...&language=...`), split-vote adjudication (`/adjudicate/`), batch ingestion (`/bulk/`), and streaming NDJSON export (`/export/?format=jsonl`)
-- **Self-Serve Multi-Tenancy, OIDC SSO, SCIM 2.0 & S3 WORM Audit Checkpointing** — Full `/api/v1/organizations/` CRUD, member seat-limit enforcement (`max_users`), 4-tier RBAC (`viewer` → `contributor` → `admin` → `owner`), enterprise OIDC `RS256`/`ES256` JWKS ID-token exchange (`POST /api/v1/auth/sso/oidc/exchange/`), RFC 7643/7644 SCIM 2.0 user lifecycle provisioning (`/scim/v2/Users`), per-tenant SHA-256 hash-chained `AuditLog` (`pg_advisory_xact_lock`) plus HMAC-signed & S3 Object Lock (`COMPLIANCE` mode) WORM `AuditChainCheckpoint` notarization (`/audit-logs/checkpoints/` & `/audit-logs/verify/`)
+- **Multilingual RLHF Pipeline, Active-Learning Uncertainty Routing & Specialist Calibration** — Atomic priority-, specialist- & uncertainty-ranked task leasing (`POST /api/v1/tasks/claim/` with blind gold-task injection, domain/difficulty routing, active-learning `-uncertainty_score` acquisition, and probation gating on `expert` tasks), LLM judge pairwise entropy triage (`POST /api/v1/ai/judge-pair/` & `POST /api/v1/tasks/{id}/triage-uncertainty/`), structured preference & 1–5 rubric annotations (`POST /api/v1/tasks/{id}/annotations/`), multi-dimensional per-domain & per-language Bayesian skill-weighted Inter-Annotator Agreement with automatic split-vote `expert` escalation (`/annotators/calibration/?domain=...&language=...`), split-vote adjudication (`/adjudicate/`), batch ingestion (`/bulk/`), and streaming NDJSON export (`/export/?format=jsonl`)
+- **Self-Serve Multi-Tenancy, OIDC SSO, SCIM 2.0 & Ed25519/KMS S3 WORM Audit Checkpointing** — Full `/api/v1/organizations/` CRUD, member seat-limit enforcement (`max_users`), 4-tier RBAC (`viewer` → `contributor` → `admin` → `owner`), enterprise OIDC `RS256`/`ES256` JWKS ID-token exchange (`POST /api/v1/auth/sso/oidc/exchange/`), RFC 7643/7644 SCIM 2.0 user lifecycle provisioning (`/scim/v2/Users`), per-tenant SHA-256 hash-chained `AuditLog` (`pg_advisory_xact_lock`) plus HMAC, asymmetric `Ed25519` / AWS KMS (`ECC_NIST_P256` `ECDSA_SHA_256`), and S3 Object Lock (`COMPLIANCE` mode) WORM `AuditChainCheckpoint` notarization (`/audit-logs/public-key/`, `/audit-logs/checkpoints/{id}/bundle/`, `/audit-logs/checkpoints/`, `/audit-logs/verify/`)
 - **Enterprise M2M API Keys & Idempotency** — Prefix-indexed SHA-256 `OrganizationAPIKey` (`mlk_live_<prefix>_...`) with route scopes (`tasks:read`, `tasks:write`, `tasks:export`, `ai:write`) plus `Idempotency-Key` middleware (`24h` Redis replay, `409` in-flight lock, `422` payload-mismatch protection)
 - **SSRF-Hardened Signed Webhooks & Transactional Outbox** — Outbound `WebhookEndpoint` delivery persisted atomically inside PostgreSQL via `OutboxEvent` (`SELECT ... FOR UPDATE SKIP LOCKED` Celery relay + 15s Beat sweep, dead-letter admin replay `/outbox/{id}/replay/`, CloudWatch metric-filter & Prometheus `mltask_outbox_dead_letter_events` gauges, bounded-chunk retention pruning, W3C `traceparent` continuity), self-serve circuit recovery (`/webhooks/{id}/recover/`) & delivery replay (`/deliveries/{id}/replay/`), signed with `X-MLTask-Signature-256: sha256=<hmac>`, non-redirecting TLS transport, and SSRF protection
 - **PostgreSQL 16 Row-Level Security (RLS), Read-Replica Routing & `pg_trgm` Search** — Storage-engine `ENABLE`/`FORCE ROW LEVEL SECURITY` policies (`tasks_task`, `tasks_annotatorcalibration`, `core_auditchaincheckpoint`, `core_organizationapikey`, `core_webhookendpoint`, `core_outboxevent`, `core_organizationssoconfig`, `core_aiusagelog`) paired with `PostgresRLSMiddleware` and `mltask_rls_app` (`NOSUPERUSER NOBYPASSRLS`), RLS-aware `ReplicaDatabaseRouter` steering `/tasks/stats/`, `/tasks/export/`, `/usage/`, `/finops/`, `/audit-logs/verify/`, `/audit-logs/checkpoints/`, and `/annotators/calibration/` to `POSTGRES_REPLICA_HOST` (`X-Query-Target: replica`), plus `pg_trgm` GIN trigram indexes accelerating multilingual `?search=` `EXISTS (... ILIKE ...)` semi-joins and plan-tiered per-organization sliding-window rate limits (`X-RateLimit-*`)
@@ -333,8 +333,10 @@ http://localhost:8000/api/v1/
 | `/api/v1/organizations/{org_id}/scim/v2/Users` | GET, POST | RFC 7643/7644 SCIM 2.0 directory listing (`filter=userName eq "..."`) & user provisioning |
 | `/api/v1/organizations/{org_id}/scim/v2/Users/{member_id}` | GET, PUT, PATCH, DELETE | RFC 7644 SCIM `PatchOp` role/profile sync & `active=false` multi-tenant-safe offboarding |
 | `/api/v1/organizations/{org_id}/audit-logs/` | GET | Paginated, filterable SHA-256 hash-chained security audit trail (read-replica routed) |
-| `/api/v1/organizations/{org_id}/audit-logs/verify/` | GET | Verify cryptographic `AuditLog` hash chain + WORM `AuditChainCheckpoint` signatures & prefix anchors |
-| `/api/v1/organizations/{org_id}/audit-logs/checkpoints/` | GET, POST | List notarized WORM checkpoints (replica-routed) or mint an immediate HMAC + S3 Object-Lock checkpoint |
+| `/api/v1/organizations/{org_id}/audit-logs/verify/` | GET | Verify cryptographic `AuditLog` hash chain + HMAC, Ed25519/KMS & WORM `AuditChainCheckpoint` signatures |
+| `/api/v1/organizations/{org_id}/audit-logs/public-key/` | GET | Retrieve active Ed25519 / AWS KMS SubjectPublicKeyInfo PEM, SHA-256 fingerprint, and RFC 7517/8037 JWK |
+| `/api/v1/organizations/{org_id}/audit-logs/checkpoints/` | GET, POST | List notarized WORM checkpoints (replica-routed) or mint an immediate HMAC + Ed25519/KMS + S3 WORM checkpoint |
+| `/api/v1/organizations/{org_id}/audit-logs/checkpoints/{id}/bundle/` | GET | Replica-routed self-contained offline verification bundle (verifiable with public key alone) |
 | `/api/v1/organizations/{org_id}/annotators/calibration/` | GET | Domain/language specialist accuracy & Bayesian `skill_weight` leaderboard (`?domain=...&language=...`) |
 | `/api/v1/organizations/{org_id}/usage/` | GET | Real-time plan quotas + cumulative OpenAI token & USD telemetry (read-replica routed) |
 | `/api/v1/organizations/{org_id}/finops/` | GET, PATCH | Monthly AI token/USD ceilings, per-operation `AIUsageLog` rollups (`X-Query-Target`), and alert thresholds |
@@ -362,6 +364,7 @@ http://localhost:8000/api/v1/
 | `/api/v1/tasks/{id}/` | GET, PATCH, DELETE | Retrieve (cached 10min), update, or soft-delete (`is_active=False`) |
 | `/api/v1/tasks/{id}/restore/` | POST | Restore a soft-deleted task (`admin`/`owner`) |
 | `/api/v1/tasks/{id}/annotations/` | GET, POST | List or submit structured RLHF preference + 1–5 rubric scores & trigger IAA consensus |
+| `/api/v1/tasks/{id}/triage-uncertainty/` | POST | Score response pair via LLM judge Shannon/margin entropy & auto-promote borderline tasks to `expert` |
 | `/api/v1/tasks/{id}/adjudicate/` | POST | Resolve split-vote disagreement and finalize gold `consensus_choice` (`admin`/`owner`) |
 
 **Task status lifecycle:** `pending` → `in_progress` → `completed` → `archived`
@@ -541,6 +544,17 @@ curl -X POST http://localhost:8000/api/v1/ai/generate-test-cases/ \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"task_description": "Identify objects in satellite imagery"}'
+```
+
+### POST `/api/v1/ai/judge-pair/`
+
+Evaluates candidate RLHF responses (`response_a` vs `response_b`) and returns calibrated preference probabilities, Shannon entropy, margin uncertainty, and active-learning escalation decision (`should_escalate`).
+
+```bash
+curl -X POST http://localhost:8000/api/v1/ai/judge-pair/ \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"prompt": "Compare Rust vs C++ memory safety", "response_a": "...", "response_b": "...", "domain": "code"}'
 ```
 
 ---
@@ -745,8 +759,8 @@ make sync-github-vars
 
 | Resource | Configuration |
 |----------|--------------|
-| ECS Fargate | Auto-scaling 2–10 API tasks (`CPU` + `ALBRequestCountPerTarget`), 1–6 Celery workers, singleton Beat, deployment circuit breaker + CloudWatch alarm auto-rollback |
-| S3 Object Lock WORM | AES-256 encrypted, public-blocked `COMPLIANCE` Object Lock bucket (`audit_worm_retention_days`) archiving signed `AuditChainCheckpoint` manifests |
+| ECS Fargate | Auto-scaling 2–10 API tasks (`CPU` + `ALBRequestCountPerTarget`), 1–6 Celery workers (`CPU` + proactive `AsyncBacklogDepth` queue-depth scaling), singleton Beat, deployment circuit breaker + CloudWatch alarm auto-rollback |
+| S3 Object Lock WORM & KMS | AES-256 encrypted, public-blocked `COMPLIANCE` Object Lock bucket (`audit_worm_retention_days`) + asymmetric AWS KMS `ECC_NIST_P256` `SIGN_VERIFY` key notarizing `AuditChainCheckpoint` manifests |
 | GitHub OIDC IAM | Keyless `AssumeRoleWithWebIdentity` scoped to `repo:MPadberg-svg/multilingual-task-api:*` + restricted `iam:PassRole` |
 | RDS PostgreSQL 16 | Multi-AZ primary + optional encrypted read replica (`enable_read_replica`, wired to `POSTGRES_REPLICA_HOST`), 7-day backups |
 | CloudWatch Alarms | Metric + Composite canary alarms (`canary_rollout_guard`) across Outbox DLQ, RDS `ReplicaLag`/`CPUUtilization`, and ALB `HTTPCode_Target_5XX_Count` |
@@ -761,12 +775,12 @@ Every push or pull request to `main` or `develop` triggers `ci.yml`, and manual/
 
 | Job | What it does |
 |-----|-------------|
-| `lint` | `flake8`, `black --check`, `isort --check-only`, `mypy` (`58` source files) |
+| `lint` | `flake8`, `black --check`, `isort --check-only`, `mypy` (`67` source files) |
 | `test` | Migration-drift check + `pytest` (`90%` minimum coverage gate) + Codecov upload |
 | `security` | `bandit -ll` (medium+ severity) + `pip-audit --strict` (production CVE check) |
 | `terraform` | `terraform fmt -check -recursive` + `terraform init -backend=false` + `terraform validate` |
 | `docker` | Multi-stage `docker build` + UID `1000` / read-only `/app` check + live `/api/v1/live/` & `/explorer/` CSP-nonce smoke test |
-| `integration` | Live `postgres:16-alpine` + `redis:7-alpine` service containers running `migrate` + full `248`-test suite (`FOR UPDATE SKIP LOCKED LIMIT 1`, `pg_advisory_xact_lock`, RLS replica routing, `ZlibCompressor`, `channels-redis`) |
+| `integration` | Live `postgres:16-alpine` + `redis:7-alpine` service containers running `migrate` + full `255`-test suite (`FOR UPDATE SKIP LOCKED LIMIT 1`, `pg_advisory_xact_lock`, Ed25519 RLS replica routing, `ZlibCompressor`, `channels-redis`) |
 | `build` (`deploy.yml`) | Keyless AWS OIDC auth → immutable SHA Docker image → push to ECR |
 | `deploy` (`deploy.yml`) | Register new API revision → synchronous Fargate `migrate --noinput` gate → rolling ECS update (`api`, `celery-worker`, `celery-beat`) → `warm_cache` → CloudFront/ALB healthcheck |
 

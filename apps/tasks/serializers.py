@@ -84,6 +84,8 @@ class TaskSerializer(serializers.ModelSerializer):
             "claimed_until",
             "consensus_score",
             "consensus_choice",
+            "uncertainty_score",
+            "auto_escalated",
             "is_gold",
             "gold_choice",
             "annotation_count",
@@ -102,6 +104,8 @@ class TaskSerializer(serializers.ModelSerializer):
             "claimed_until",
             "consensus_score",
             "consensus_choice",
+            "uncertainty_score",
+            "auto_escalated",
             "annotation_count",
             "created_at",
             "updated_at",
@@ -336,6 +340,8 @@ class TaskSerializer(serializers.ModelSerializer):
             ),
             "consensus_score": instance.consensus_score,
             "consensus_choice": instance.consensus_choice,
+            "uncertainty_score": instance.uncertainty_score,
+            "auto_escalated": instance.auto_escalated,
             "annotation_count": self.get_annotation_count(instance),
             "is_active": instance.is_active,
             "organization": str(instance.organization_id) if instance.organization_id else None,
@@ -558,3 +564,41 @@ class TaskClaimRequestSerializer(serializers.Serializer):
         allow_null=True,
         default=None,
     )
+
+
+class TaskUncertaintyTriageSerializer(serializers.Serializer):
+    """Payload for ``POST /api/v1/tasks/{id}/triage-uncertainty/`` active-learning judge routing."""
+
+    prompt = serializers.CharField(
+        max_length=10000,
+        required=False,
+        allow_blank=True,
+        default="",
+    )
+    response_a = serializers.CharField(max_length=10000, required=True, allow_blank=False)
+    response_b = serializers.CharField(max_length=10000, required=True, allow_blank=False)
+    lang = serializers.CharField(max_length=10, required=False, default="en")
+
+    @staticmethod
+    def _sanitize_field(val: str, label: str) -> str:
+        is_bad, reason = InputValidator.detect_injection(val)
+        if is_bad:
+            raise serializers.ValidationError(f"Invalid {label}: {reason}")
+        return InputValidator.sanitize_string(val, max_length=10000)
+
+    def validate_prompt(self, value: str) -> str:
+        if not value or not value.strip():
+            return ""
+        return self._sanitize_field(value, "prompt")
+
+    def validate_response_a(self, value: str) -> str:
+        cleaned = self._sanitize_field(value, "response_a")
+        if not cleaned:
+            raise serializers.ValidationError("response_a cannot be empty.")
+        return cleaned
+
+    def validate_response_b(self, value: str) -> str:
+        cleaned = self._sanitize_field(value, "response_b")
+        if not cleaned:
+            raise serializers.ValidationError("response_b cannot be empty.")
+        return cleaned
