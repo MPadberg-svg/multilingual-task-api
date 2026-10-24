@@ -1035,9 +1035,21 @@ def test_live_postgres_merkle_inclusion_dpo_streaming_rls_and_adaptive_domain_po
         upsert_domain_uncertainty_policy(
             org_b, domain="medical", threshold=0.84, auto_calibrate=False
         )
-        with rls_context(organization_id=str(org_a.id), user_id=str(owner_a.id), enforced=True):
-            visible_ids = list(DomainUncertaintyPolicy.objects.values_list("id", flat=True))
-            assert visible_ids == [pol_a.id]
+        with connections["default"].cursor() as p_cur:
+            p_cur.execute("""
+                SELECT relname, relrowsecurity, relforcerowsecurity
+                FROM pg_class
+                WHERE relname = 'tasks_domainuncertaintypolicy'
+                """)
+            assert p_cur.fetchall() == [("tasks_domainuncertaintypolicy", True, True)]
+
+            p_cur.execute("SET ROLE mltask_rls_app")
+            try:
+                with rls_context(organization_id=str(org_a.id)):
+                    visible_ids = list(DomainUncertaintyPolicy.objects.values_list("id", flat=True))
+                    assert visible_ids == [pol_a.id]
+            finally:
+                p_cur.execute("RESET ROLE")
 
         # 2. Seed consensus tasks in org_a & org_b and verify RLS-isolated replica DPO export
         t_a = Task.objects.create(
