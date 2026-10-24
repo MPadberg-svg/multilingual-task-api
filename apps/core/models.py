@@ -42,6 +42,8 @@ VALID_WEBHOOK_EVENTS: frozenset[str] = frozenset(
         "scim.user_deprovisioned",
         "annotator.calibrated",
         "audit.checkpoint_anchored",
+        "dataset.exported",
+        "uncertainty.policy_calibrated",
     }
 )
 
@@ -404,6 +406,7 @@ class AuditLog(models.Model):
             ("task_annotated", "Task Annotated"),
             ("task_adjudicated", "Task Adjudicated"),
             ("task_uncertainty_triaged", "Task Uncertainty Triaged"),
+            ("uncertainty_policy_updated", "Uncertainty Policy Updated"),
             ("gold_task_evaluated", "Gold Calibration Task Evaluated"),
             ("audit_checkpoint_anchored", "Audit Chain Checkpoint Anchored"),
             ("exported", "Dataset Exported"),
@@ -473,6 +476,7 @@ class AuditChainCheckpoint(models.Model):
     covered_up_to_seq = models.PositiveBigIntegerField()
     verified_entries = models.PositiveBigIntegerField()
     head_hash = models.CharField(max_length=64)
+    merkle_root = models.CharField(max_length=64, blank=True, default="")
     manifest_digest = models.CharField(max_length=64)
     prev_checkpoint_hash = models.CharField(max_length=64, default="0" * 64)
     checkpoint_hash = models.CharField(max_length=64, db_index=True)

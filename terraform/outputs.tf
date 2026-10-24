@@ -100,6 +100,11 @@ output "canary_composite_alarm_arn" {
   value       = aws_cloudwatch_composite_alarm.canary_rollout_guard.arn
 }
 
+output "dataset_export_bucket_name" {
+  description = "Encrypted S3 bucket name for signed DPO / RLHF dataset snapshot archives"
+  value       = try(aws_s3_bucket.dataset_exports[0].bucket, "")
+}
+
 output "redis_endpoint" {
   description = "ElastiCache Redis primary endpoint"
   value       = aws_elasticache_replication_group.redis.primary_endpoint_address

@@ -646,7 +646,7 @@ def test_terraform_v1100_kms_transparency_and_celery_backlog_autoscaling_iac() -
     vars_tf = (tf_dir / "variables.tf").read_text(encoding="utf-8")
     outputs_tf = (tf_dir / "outputs.tf").read_text(encoding="utf-8")
 
-    assert 'default     = "v1.10.0"' in vars_tf
+    assert 'default     = "v1.11.0"' in vars_tf
     assert 'variable "enable_audit_kms_signing"' in vars_tf
     assert 'variable "celery_backlog_target_per_worker"' in vars_tf
     assert 'resource "aws_kms_key" "audit_anchor"' in main_tf

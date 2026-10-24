@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.11.0] — 2026-10-24
+
+### Added
+- **RFC 9162 Binary Merkle Transparency Tree, $O(\log N)$ Inclusion Proofs & Consistency Proofs (`apps/core/merkle.py`, `apps/core/audit_chain.py`, `apps/core/models.py`, `apps/core/tenant_views.py`, `config/urls.py`)**:
+  - Implemented domain-separated RFC 9162 §2.1 binary Merkle trees (`0x00` leaf / `0x01` interior node SHA-256 hashing), $O(\log N)$ audit inclusion paths (`build_merkle_inclusion_proof` / `verify_merkle_inclusion_path`), and append-only consistency proofs (`build_merkle_consistency_proof` / `verify_merkle_consistency_proof`).
+  - Bound `merkle_root` into `AuditChainCheckpoint`, `verify_organization_audit_chain()` (`checkpoint_merkle_root_mismatch`), WORM S3 checkpoint JSONs, replica-routed `GET /api/v1/organizations/{org_id}/audit-logs/{entry_id}/inclusion-proof/`, `GET /api/v1/organizations/{org_id}/audit-logs/checkpoints/consistency-proof/`, and pure zero-secret `verify_audit_inclusion_bundle_offline()`.
+- **Streaming DPO / RLHF Dataset Export Pipeline with PII Redaction, Deterministic Splits & Signed Provenance Manifests (`apps/tasks/dpo_export.py`, `apps/tasks/views.py`, `terraform/`)**:
+  - Added replica-routed `GET /api/v1/tasks/export-dpo/` (`tasks:export` M2M scope-protected) supporting quality-gated TRL (`prompt`/`chosen`/`rejected`) and OpenAI chat (`chosen_messages`/`rejected_messages`) schemas, regex PII/secret scrubbing (`scrub_dataset_pii`), leak-free HMAC-SHA256 `train`/`eval` splits (`assign_deterministic_split`), and specialist Bayesian `winning_skill_weight` metadata.
+  - Added RFC 9162 Merkle-rooted, HMAC + Ed25519/KMS-signed provenance manifests (`?export_format=manifest`, `verify_dpo_manifest_offline()`) with optional stdlib AWS SigV4 HTTPS `PUT` archival (`?archive_to_s3=true`, `dataset.exported` Outbox event) and Terraform `aws_s3_bucket.dataset_exports` (`AES256`, `GLACIER_IR` lifecycle transition, least-privilege IAM).
+- **Adaptive Per-Domain Active-Learning Uncertainty Thresholds (`apps/tasks/uncertainty.py`, `apps/tasks/models.py`, `apps/tasks/consensus.py`, `apps/ai_assist/services.py`, `apps/tasks/migrations/0014_postgres_rls_v1110_uncertainty_policy.py`)**:
+  - Added PostgreSQL 16 `FORCE ROW LEVEL SECURITY`-protected `DomainUncertaintyPolicy` and `Task.judge_uncertainty_score` tracking empirical correlation between LLM judge uncertainty and downstream human split-vote deadlocks per `(organization, domain)`.
+  - Added automatic online & 6-hour Celery Beat threshold calibration (`calibrate_adaptive_uncertainty_thresholds` + `uncertainty.policy_calibrated` Outbox event) plus `GET/POST /api/v1/organizations/{org_id}/uncertainty-policies/` for inspecting, calibrating, or pinning domain thresholds.
+
+---
+
 ## [1.10.0] — 2026-10-24
 
 ### Added

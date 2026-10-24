@@ -490,7 +490,7 @@ def test_terraform_v190_worm_autoscaling_and_canary_guardrails() -> None:
     vars_tf = (tf_dir / "variables.tf").read_text(encoding="utf-8")
     outputs_tf = (tf_dir / "outputs.tf").read_text(encoding="utf-8")
 
-    assert 'default     = "v1.10.0"' in vars_tf
+    assert 'default     = "v1.11.0"' in vars_tf
     assert 'resource "aws_s3_bucket" "audit_worm"' in main_tf
     assert "object_lock_enabled = true" in main_tf
     assert 'resource "aws_s3_bucket_object_lock_configuration" "audit_worm"' in main_tf

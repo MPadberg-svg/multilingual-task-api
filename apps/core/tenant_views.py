@@ -28,6 +28,8 @@ from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.core.audit_chain import (
+    build_audit_entry_inclusion_bundle,
+    build_checkpoint_consistency_bundle,
     create_organization_audit_checkpoint,
     get_active_transparency_public_key_metadata,
     verify_checkpoint_offline_bundle,
@@ -558,6 +560,192 @@ class OrganizationAuditCheckpointBundleView(APIView):
             },
             headers={"X-Query-Target": query_target},
         )
+
+
+class OrganizationAuditLogInclusionProofView(APIView):
+    """Replica-routed RFC 9162 $O(\\log N)$ Merkle inclusion proof for a single AuditLog row."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="v1_organizations_audit_logs_inclusion_proof_retrieve",
+        responses={200: {"type": "object"}, 404: {"type": "object"}, 409: {"type": "object"}},
+    )
+    def get(self, request: Request, org_id: str, entry_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        checkpoint_id = (request.query_params.get("checkpoint_id") or "").strip() or None
+        try:
+            bundle, query_target = build_audit_entry_inclusion_bundle(
+                org,
+                entry_id=str(entry_id),
+                checkpoint_id=checkpoint_id,
+            )
+        except LookupError as exc:
+            return Response(
+                {"error": str(exc)},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        except ValueError as exc:
+            return Response(
+                {"error": str(exc), "code": str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+        return Response(bundle, headers={"X-Query-Target": query_target})
+
+
+class OrganizationAuditCheckpointConsistencyProofView(APIView):
+    """Replica-routed RFC 9162 §2.1.4 append-only Merkle consistency proof across checkpoints."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="v1_organizations_audit_logs_checkpoints_consistency_retrieve",
+        responses={200: {"type": "object"}, 400: {"type": "object"}, 404: {"type": "object"}},
+    )
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        raw_from = (request.query_params.get("from_seq") or "").strip()
+        raw_to = (request.query_params.get("to_seq") or "").strip()
+        try:
+            from_seq = int(raw_from) if raw_from else None
+            to_seq = int(raw_to) if raw_to else None
+        except ValueError:
+            return Response(
+                {"error": "from_seq and to_seq must be positive integers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            payload, query_target = build_checkpoint_consistency_bundle(
+                org,
+                from_checkpoint_seq=from_seq,
+                to_checkpoint_seq=to_seq,
+            )
+        except LookupError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(payload, headers={"X-Query-Target": query_target})
+
+
+class OrganizationUncertaintyPolicyView(APIView):
+    """Inspect, pin, or empirically calibrate per-domain active-learning thresholds."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="v1_organizations_uncertainty_policies_retrieve",
+        responses={200: {"type": "object"}},
+    )
+    def get(self, request: Request, org_id: str) -> Response:
+        from apps.tasks.uncertainty import get_organization_uncertainty_policies
+
+        org, _role = _require_org_admin(request.user, org_id)
+        payload, query_target = get_organization_uncertainty_policies(org)
+        return Response(payload, headers={"X-Query-Target": query_target})
+
+    @extend_schema(
+        operation_id="v1_organizations_uncertainty_policies_create",
+        request={
+            "application/json": {
+                "type": "object",
+                "properties": {
+                    "action": {"type": "string", "enum": ["calibrate", "upsert"]},
+                    "domain": {"type": "string"},
+                    "threshold": {"type": "number"},
+                    "auto_calibrate": {"type": "boolean"},
+                    "min_samples": {"type": "integer"},
+                },
+            }
+        },
+        responses={200: {"type": "object"}, 400: {"type": "object"}},
+    )
+    def post(self, request: Request, org_id: str) -> Response:
+        from apps.tasks.uncertainty import (
+            calibrate_organization_domain_thresholds,
+            get_organization_uncertainty_policies,
+            upsert_domain_uncertainty_policy,
+        )
+
+        org, _role = _require_org_admin(request.user, org_id)
+        data = request.data if isinstance(request.data, dict) else {}
+        mode = str(
+            data.get("action") or ("calibrate" if "domain" not in data else "upsert")
+        ).lower()
+
+        if mode == "calibrate":
+            try:
+                min_samples = int(data.get("min_samples", 3))
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "min_samples must be an integer."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            target_domain = str(data.get("domain") or "").strip().lower() or None
+            cal_summary = calibrate_organization_domain_thresholds(
+                org,
+                min_samples=min_samples,
+                target_domain=target_domain,
+            )
+            _record_audit(
+                request,
+                action="uncertainty_policy_updated",
+                resource_type="Organization",
+                resource_id=str(org.id),
+                organization=org,
+                metadata={
+                    "mode": "calibrate",
+                    "adjusted_count": cal_summary["adjusted_count"],
+                },
+            )
+            policies_payload, _ = get_organization_uncertainty_policies(org)
+            return Response(
+                {"calibration": cal_summary, **policies_payload},
+                status=status.HTTP_200_OK,
+            )
+
+        domain_val = str(data.get("domain") or "").strip().lower()
+        raw_threshold = data.get("threshold")
+        threshold_val: float | None = None
+        if raw_threshold is not None:
+            try:
+                threshold_val = float(raw_threshold)
+            except (TypeError, ValueError):
+                return Response(
+                    {"error": "threshold must be numeric."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            if not (0.10 <= threshold_val <= 0.99):
+                return Response(
+                    {"error": "threshold must be between 0.10 and 0.99."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        auto_cal_val: bool | None = (
+            bool(data["auto_calibrate"]) if "auto_calibrate" in data else None
+        )
+        try:
+            policy = upsert_domain_uncertainty_policy(
+                org,
+                domain=domain_val,
+                threshold=threshold_val,
+                auto_calibrate=auto_cal_val,
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        _record_audit(
+            request,
+            action="uncertainty_policy_updated",
+            resource_type="DomainUncertaintyPolicy",
+            resource_id=str(policy.id),
+            organization=org,
+            metadata={
+                "domain": policy.domain,
+                "threshold": policy.threshold,
+                "auto_calibrate": policy.auto_calibrate,
+            },
+        )
+        policies_payload, _ = get_organization_uncertainty_policies(org)
+        return Response(policies_payload, status=status.HTTP_200_OK)
 
 
 class OrganizationAnnotatorCalibrationView(APIView):

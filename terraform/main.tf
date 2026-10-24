@@ -483,14 +483,98 @@ resource "aws_iam_role_policy" "ecs_task_audit_kms" {
   })
 }
 
+resource "aws_s3_bucket" "dataset_exports" {
+  count = var.enable_dataset_export_bucket ? 1 : 0
+
+  bucket_prefix = "${var.project_name}-dpo-exports-"
+  force_destroy = var.environment != "production"
+
+  tags = var.common_tags
+}
+
+resource "aws_s3_bucket_public_access_block" "dataset_exports" {
+  count = var.enable_dataset_export_bucket ? 1 : 0
+
+  bucket                  = aws_s3_bucket.dataset_exports[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_versioning" "dataset_exports" {
+  count = var.enable_dataset_export_bucket ? 1 : 0
+
+  bucket = aws_s3_bucket.dataset_exports[0].id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "dataset_exports" {
+  count = var.enable_dataset_export_bucket ? 1 : 0
+
+  bucket = aws_s3_bucket.dataset_exports[0].id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "dataset_exports" {
+  count = var.enable_dataset_export_bucket ? 1 : 0
+
+  bucket = aws_s3_bucket.dataset_exports[0].id
+
+  rule {
+    id     = "archive-and-expire-dpo-snapshots"
+    status = "Enabled"
+
+    filter {}
+
+    transition {
+      days          = 30
+      storage_class = "GLACIER_IR"
+    }
+
+    expiration {
+      days = var.dataset_export_retention_days
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_task_dataset_exports" {
+  count = var.enable_dataset_export_bucket ? 1 : 0
+  name  = "${var.project_name}-ecs-task-dpo-exports"
+  role  = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+        ]
+        Resource = "${aws_s3_bucket.dataset_exports[0].arn}/*"
+      },
+    ]
+  })
+}
+
 locals {
-  enable_origin_cloaking = nonsensitive(var.origin_verify_secret != "")
-  redis_tls_base_url     = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
-  github_oidc_arn        = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
-  postgres_replica_host  = var.enable_read_replica ? aws_db_instance.postgres_replica[0].address : ""
-  audit_worm_bucket_name = var.enable_audit_worm_bucket ? aws_s3_bucket.audit_worm[0].bucket : ""
-  audit_kms_key_arn      = var.enable_audit_kms_signing ? aws_kms_key.audit_anchor[0].arn : ""
-  alarm_actions          = var.alert_sns_topic_arn != "" ? [var.alert_sns_topic_arn] : []
+  enable_origin_cloaking     = nonsensitive(var.origin_verify_secret != "")
+  redis_tls_base_url         = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
+  github_oidc_arn            = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
+  postgres_replica_host      = var.enable_read_replica ? aws_db_instance.postgres_replica[0].address : ""
+  audit_worm_bucket_name     = var.enable_audit_worm_bucket ? aws_s3_bucket.audit_worm[0].bucket : ""
+  audit_kms_key_arn          = var.enable_audit_kms_signing ? aws_kms_key.audit_anchor[0].arn : ""
+  dataset_export_bucket_name = var.enable_dataset_export_bucket ? aws_s3_bucket.dataset_exports[0].bucket : ""
+  alarm_actions              = var.alert_sns_topic_arn != "" ? [var.alert_sns_topic_arn] : []
   canary_rollback_alarms = [
     aws_cloudwatch_metric_alarm.alb_target_5xx.alarm_name,
     aws_cloudwatch_metric_alarm.outbox_dead_letter.alarm_name,
@@ -522,6 +606,8 @@ locals {
     { name = "AUDIT_ANCHOR_KMS_KEY_ID", value = local.audit_kms_key_arn },
     { name = "AUDIT_ANCHOR_KMS_SIGNING_ALG", value = "ECDSA_SHA_256" },
     { name = "ACTIVE_LEARNING_ENTROPY_THRESHOLD", value = tostring(var.active_learning_entropy_threshold) },
+    { name = "DATASET_EXPORT_S3_BUCKET", value = local.dataset_export_bucket_name },
+    { name = "DATASET_EXPORT_S3_REGION", value = var.aws_region },
   ]
   shared_secrets = compact([
     var.django_secret_key_arn != "" ? jsonencode({ name = "SECRET_KEY", valueFrom = var.django_secret_key_arn }) : "",

@@ -276,3 +276,17 @@ def emit_backlog_autoscaling_telemetry() -> dict[str, Any]:
     }
     logger.info(json.dumps(structured_event, sort_keys=True, separators=(",", ":")))
     return structured_event
+
+
+@shared_task
+def calibrate_adaptive_uncertainty_thresholds(
+    min_samples: int = 3,
+    batch_size: int = 100,
+) -> dict[str, int]:
+    """Periodically calibrate per-domain active-learning thresholds across active tenants."""
+    from apps.tasks.uncertainty import calibrate_all_organizations_thresholds
+
+    return calibrate_all_organizations_thresholds(
+        min_samples=min_samples,
+        batch_size=batch_size,
+    )

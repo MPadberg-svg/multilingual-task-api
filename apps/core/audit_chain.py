@@ -42,6 +42,14 @@ from cryptography.hazmat.primitives.asymmetric import utils as asym_utils
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from apps.core.db_router import use_read_replica
+from apps.core.merkle import (
+    EMPTY_MERKLE_ROOT,
+    build_merkle_consistency_proof,
+    build_merkle_inclusion_proof,
+    compute_merkle_root,
+    verify_merkle_consistency_proof,
+    verify_merkle_inclusion_path,
+)
 from apps.core.rls import rls_bypass
 
 if TYPE_CHECKING:
@@ -174,9 +182,10 @@ def compute_canonical_checkpoint_hash(
     prev_checkpoint_hash: str,
     retention_until: Any,
     created_at: Any,
+    merkle_root: str = "",
 ) -> str:
     """Compute secret-free SHA-256 hex digest over canonical checkpoint fields."""
-    envelope = {
+    envelope: dict[str, Any] = {
         "v": 1,
         "id": str(checkpoint_id),
         "organization_id": str(organization_id),
@@ -189,6 +198,8 @@ def compute_canonical_checkpoint_hash(
         "retention_until": _canonical_timestamp(retention_until),
         "created_at": _canonical_timestamp(created_at),
     }
+    if merkle_root:
+        envelope["merkle_root"] = str(merkle_root)
     canonical_bytes = json.dumps(
         envelope,
         sort_keys=True,
@@ -210,6 +221,7 @@ def compute_checkpoint_hash_and_signature(
     prev_checkpoint_hash: str,
     retention_until: datetime,
     created_at: datetime,
+    merkle_root: str = "",
 ) -> tuple[str, str]:
     """Return ``(checkpoint_hash, hmac_signature)`` over canonical checkpoint fields."""
     ckpt_hash = compute_canonical_checkpoint_hash(
@@ -223,6 +235,7 @@ def compute_checkpoint_hash_and_signature(
         prev_checkpoint_hash=prev_checkpoint_hash,
         retention_until=retention_until,
         created_at=created_at,
+        merkle_root=merkle_root,
     )
     sig = hmac.new(
         _anchor_signing_secret(),
@@ -540,6 +553,7 @@ def verify_checkpoint_offline_bundle(
         prev_checkpoint_hash=str(checkpoint_data["prev_checkpoint_hash"]),
         retention_until=checkpoint_data["retention_until"],
         created_at=checkpoint_data["created_at"],
+        merkle_root=str(checkpoint_data.get("merkle_root") or ""),
     )
 
     reasons: list[str] = []
@@ -828,6 +842,7 @@ def verify_organization_audit_chain(
             prev_checkpoint_hash=str(ckpt.prev_checkpoint_hash),
             retention_until=ckpt.retention_until,
             created_at=ckpt.created_at,
+            merkle_root=str(ckpt.merkle_root or ""),
         )
         if not hmac.compare_digest(str(ckpt.checkpoint_hash), exp_hash):
             ckpt_reasons.append("checkpoint_hash_mismatch")
@@ -854,6 +869,21 @@ def verify_organization_audit_chain(
             if observed_hash is None or not hmac.compare_digest(observed_hash, str(ckpt.head_hash)):
                 ckpt_reasons.append("checkpoint_anchor_divergence")
 
+        if ckpt.merkle_root:
+            if anchored_seq == 0:
+                expected_merkle = EMPTY_MERKLE_ROOT
+                leaves_complete = True
+            else:
+                leaf_list = [hash_by_seq[s] for s in range(1, anchored_seq + 1) if s in hash_by_seq]
+                leaves_complete = len(leaf_list) == anchored_seq and all(
+                    len(h) == 64 for h in leaf_list
+                )
+                expected_merkle = compute_merkle_root(leaf_list) if leaves_complete else ""
+            if not leaves_complete or not hmac.compare_digest(
+                expected_merkle, str(ckpt.merkle_root)
+            ):
+                ckpt_reasons.append("checkpoint_merkle_root_mismatch")
+
         if ckpt_reasons:
             checkpoint_violations.append(
                 {
@@ -866,6 +896,11 @@ def verify_organization_audit_chain(
 
         expected_prev_ckpt_hash = str(ckpt.checkpoint_hash)
         expected_ckpt_seq = int(ckpt.checkpoint_seq) + 1
+
+    ordered_leaf_hashes = [
+        hash_by_seq[s] for s in sorted(hash_by_seq.keys()) if len(hash_by_seq[s]) == 64
+    ]
+    chain_merkle_root = compute_merkle_root(ordered_leaf_hashes)
 
     chain_valid = len(violations) == 0 and len(checkpoint_violations) == 0
     manifest_preimage = json.dumps(
@@ -889,6 +924,7 @@ def verify_organization_audit_chain(
         "head_chain_seq": max_chain_seq,
         "genesis_hash": GENESIS_AUDIT_HASH,
         "head_hash": head_hash,
+        "merkle_root": chain_merkle_root,
         "manifest_digest": manifest_digest,
         "verified_at": _canonical_timestamp(timezone.now()),
         "violations": violations,
@@ -967,6 +1003,7 @@ def create_organization_audit_checkpoint(
             )
             ckpt_id = uuid_mod.uuid4()
 
+            ckpt_merkle_root = str(report["merkle_root"])
             ckpt_hash, sig = compute_checkpoint_hash_and_signature(
                 checkpoint_id=str(ckpt_id),
                 organization_id=str(org.id),
@@ -978,6 +1015,7 @@ def create_organization_audit_checkpoint(
                 prev_checkpoint_hash=prev_ckpt_hash,
                 retention_until=retention_until,
                 created_at=now_utc,
+                merkle_root=ckpt_merkle_root,
             )
 
             anchor_status = "hmac_sealed"
@@ -1016,6 +1054,7 @@ def create_organization_audit_checkpoint(
                         "covered_up_to_seq": covered_seq,
                         "verified_entries": verified_entries,
                         "head_hash": report["head_hash"],
+                        "merkle_root": ckpt_merkle_root,
                         "manifest_digest": report["manifest_digest"],
                         "prev_checkpoint_hash": prev_ckpt_hash,
                         "checkpoint_hash": ckpt_hash,
@@ -1061,6 +1100,7 @@ def create_organization_audit_checkpoint(
                 covered_up_to_seq=covered_seq,
                 verified_entries=verified_entries,
                 head_hash=str(report["head_hash"]),
+                merkle_root=ckpt_merkle_root,
                 manifest_digest=str(report["manifest_digest"]),
                 prev_checkpoint_hash=prev_ckpt_hash,
                 checkpoint_hash=ckpt_hash,
@@ -1085,6 +1125,7 @@ def create_organization_audit_checkpoint(
                     "checkpoint_seq": next_ckpt_seq,
                     "covered_up_to_seq": covered_seq,
                     "head_hash": checkpoint.head_hash,
+                    "merkle_root": checkpoint.merkle_root,
                     "checkpoint_hash": checkpoint.checkpoint_hash,
                     "signature": checkpoint.signature,
                     "signature_algorithm": checkpoint.signature_algorithm,
@@ -1128,3 +1169,257 @@ def anchor_pending_audit_checkpoints(*, batch_size: int = 100) -> dict[str, int]
                 )
 
     return {"anchored": anchored, "skipped": skipped, "corrupted": corrupted}
+
+
+def serialize_canonical_audit_entry(entry: "AuditLog") -> dict[str, Any]:
+    """Return canonical secret-free representation of an ``AuditLog`` row."""
+    return {
+        "v": 1,
+        "id": str(entry.id),
+        "organization_id": str(entry.organization_id) if entry.organization_id else None,
+        "user_id": str(entry.user_id) if entry.user_id else None,
+        "action": str(entry.action),
+        "resource_type": str(entry.resource_type),
+        "resource_id": str(entry.resource_id or ""),
+        "ip_address": str(entry.ip_address) if entry.ip_address else None,
+        "user_agent": str(entry.user_agent or ""),
+        "metadata": entry.metadata if isinstance(entry.metadata, dict) else {},
+        "created_at": _canonical_timestamp(entry.created_at),
+        "chain_seq": int(entry.chain_seq),
+        "prev_hash": str(entry.prev_hash),
+        "entry_hash": str(entry.entry_hash),
+    }
+
+
+def verify_audit_inclusion_bundle_offline(
+    bundle_data: dict[str, Any],
+    public_key_pem: str = "",
+) -> dict[str, Any]:
+    """Verify an $O(\\log N)$ RFC 9162 single-event inclusion proof offline with zero secrets."""
+    reasons: list[str] = []
+    entry_doc = dict(bundle_data.get("entry") or {})
+    proof_doc = dict(bundle_data.get("inclusion_proof") or {})
+    ckpt_doc = dict(bundle_data.get("checkpoint") or {})
+
+    claimed_entry_hash = str(entry_doc.get("entry_hash") or proof_doc.get("entry_hash") or "")
+    canonical_for_hash: dict[str, Any] = {
+        "v": 1,
+        "id": str(entry_doc.get("id") or ""),
+        "organization_id": entry_doc.get("organization_id"),
+        "user_id": entry_doc.get("user_id"),
+        "action": str(entry_doc.get("action") or ""),
+        "resource_type": str(entry_doc.get("resource_type") or ""),
+        "resource_id": str(entry_doc.get("resource_id") or ""),
+        "ip_address": entry_doc.get("ip_address"),
+        "user_agent": str(entry_doc.get("user_agent") or ""),
+        "metadata": (
+            entry_doc.get("metadata") if isinstance(entry_doc.get("metadata"), dict) else {}
+        ),
+        "created_at": _canonical_timestamp(entry_doc.get("created_at")),
+        "chain_seq": int(entry_doc.get("chain_seq") or 0),
+        "prev_hash": str(entry_doc.get("prev_hash") or ""),
+    }
+    recomputed_entry_hash = hashlib.sha256(
+        json.dumps(
+            canonical_for_hash,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+    if not claimed_entry_hash or not hmac.compare_digest(claimed_entry_hash, recomputed_entry_hash):
+        reasons.append("entry_hash_mismatch")
+
+    expected_merkle_root = str(ckpt_doc.get("merkle_root") or proof_doc.get("merkle_root") or "")
+    merkle_result = verify_merkle_inclusion_path(
+        leaf_hex=recomputed_entry_hash,
+        leaf_index=int(proof_doc.get("leaf_index", -1)),
+        tree_size=int(proof_doc.get("tree_size", 0)),
+        audit_path=list(proof_doc.get("audit_path") or []),
+        expected_root=expected_merkle_root,
+    )
+    if not merkle_result["valid"]:
+        reasons.extend(merkle_result["reasons"])
+
+    resolved_pem = str(public_key_pem or bundle_data.get("public_key_pem") or "").strip()
+    checkpoint_sig_check: dict[str, Any] | None = None
+    if resolved_pem and ckpt_doc.get("asymmetric_signature"):
+        checkpoint_sig_check = verify_checkpoint_offline_bundle(ckpt_doc, resolved_pem)
+        if not checkpoint_sig_check["valid"]:
+            reasons.extend(checkpoint_sig_check["reasons"])
+
+    return {
+        "valid": len(reasons) == 0,
+        "recomputed_entry_hash": recomputed_entry_hash,
+        "recomputed_merkle_root": merkle_result["recomputed_root"],
+        "leaf_hash": merkle_result["leaf_hash"],
+        "checkpoint_signature_verification": checkpoint_sig_check,
+        "reasons": reasons,
+    }
+
+
+def build_audit_entry_inclusion_bundle(
+    org: "Organization",
+    *,
+    entry_id: str,
+    checkpoint_id: str | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Construct replica-routed RFC 9162 $O(\\log N)$ inclusion proof for a single AuditLog row."""
+    from apps.core.models import AuditChainCheckpoint, AuditLog
+    from apps.core.serializers import AuditChainCheckpointSerializer
+
+    with use_read_replica() as query_target:
+        entry = AuditLog.objects.filter(organization_id=org.id, id=entry_id).first()
+        if entry is None:
+            raise LookupError("audit_entry_not_found")
+
+        entry_seq = int(entry.chain_seq)
+        if checkpoint_id:
+            checkpoint = AuditChainCheckpoint.objects.filter(
+                organization_id=org.id,
+                id=checkpoint_id,
+            ).first()
+            if checkpoint is None:
+                raise LookupError("checkpoint_not_found")
+            if int(checkpoint.covered_up_to_seq) < entry_seq:
+                raise ValueError("checkpoint_precedes_entry")
+        else:
+            checkpoint = (
+                AuditChainCheckpoint.objects.filter(
+                    organization_id=org.id,
+                    covered_up_to_seq__gte=entry_seq,
+                )
+                .order_by("-checkpoint_seq")
+                .first()
+            )
+            if checkpoint is None:
+                raise ValueError("entry_not_yet_checkpointed")
+
+        tree_size = int(checkpoint.covered_up_to_seq)
+        leaf_hashes = list(
+            AuditLog.objects.filter(
+                organization_id=org.id,
+                chain_seq__lte=tree_size,
+            )
+            .order_by("chain_seq")
+            .values_list("entry_hash", flat=True)
+        )
+        if len(leaf_hashes) != tree_size:
+            raise ValidationError(
+                "AuditLog sequence discontinuity prevented Merkle proof generation."
+            )
+
+        leaf_index = entry_seq - 1
+        audit_path = build_merkle_inclusion_proof(leaf_hashes, leaf_index)
+        effective_root = str(checkpoint.merkle_root) or compute_merkle_root(leaf_hashes)
+        ckpt_data = dict(AuditChainCheckpointSerializer(checkpoint).data)
+        if not ckpt_data.get("merkle_root"):
+            ckpt_data["merkle_root"] = effective_root
+        entry_doc = serialize_canonical_audit_entry(entry)
+
+    key_meta = get_active_transparency_public_key_metadata()
+    merkle_check = verify_merkle_inclusion_path(
+        leaf_hex=str(entry.entry_hash),
+        leaf_index=leaf_index,
+        tree_size=tree_size,
+        audit_path=audit_path,
+        expected_root=effective_root,
+    )
+
+    bundle: dict[str, Any] = {
+        "bundle_version": "1.1",
+        "proof_spec": "RFC9162-SHA256",
+        "organization_id": str(org.id),
+        "entry": entry_doc,
+        "inclusion_proof": {
+            "leaf_index": leaf_index,
+            "tree_size": tree_size,
+            "entry_hash": str(entry.entry_hash),
+            "leaf_hash": merkle_check["leaf_hash"],
+            "merkle_root": effective_root,
+            "audit_path": audit_path,
+            "path_length": len(audit_path),
+        },
+        "checkpoint": ckpt_data,
+        "public_key_pem": key_meta["public_key_pem"],
+        "public_key_fingerprint": key_meta["public_key_fingerprint"],
+        "jwk": key_meta["jwk"],
+        "query_target": query_target,
+    }
+    bundle["offline_verification"] = verify_audit_inclusion_bundle_offline(
+        bundle,
+        str(key_meta["public_key_pem"]),
+    )
+    return bundle, query_target
+
+
+def build_checkpoint_consistency_bundle(
+    org: "Organization",
+    *,
+    from_checkpoint_seq: int | None = None,
+    to_checkpoint_seq: int | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Construct replica-routed RFC 9162 §2.1.4 append-only consistency proof across checkpoints."""
+    from apps.core.models import AuditChainCheckpoint, AuditLog
+
+    with use_read_replica() as query_target:
+        checkpoints = list(
+            AuditChainCheckpoint.objects.filter(organization_id=org.id).order_by("checkpoint_seq")
+        )
+        if len(checkpoints) == 0:
+            raise LookupError("no_checkpoints_found")
+
+        by_seq = {int(c.checkpoint_seq): c for c in checkpoints}
+        first_ckpt = (
+            by_seq.get(int(from_checkpoint_seq))
+            if from_checkpoint_seq is not None
+            else checkpoints[0]
+        )
+        second_ckpt = (
+            by_seq.get(int(to_checkpoint_seq)) if to_checkpoint_seq is not None else checkpoints[-1]
+        )
+        if first_ckpt is None or second_ckpt is None:
+            raise LookupError("checkpoint_not_found")
+        if int(first_ckpt.checkpoint_seq) > int(second_ckpt.checkpoint_seq):
+            raise ValueError("invalid_checkpoint_order")
+
+        first_size = int(first_ckpt.covered_up_to_seq)
+        second_size = int(second_ckpt.covered_up_to_seq)
+        leaf_hashes = list(
+            AuditLog.objects.filter(
+                organization_id=org.id,
+                chain_seq__lte=second_size,
+            )
+            .order_by("chain_seq")
+            .values_list("entry_hash", flat=True)
+        )
+        if len(leaf_hashes) != second_size:
+            raise ValidationError("AuditLog sequence discontinuity prevented consistency proof.")
+
+        first_root = str(first_ckpt.merkle_root) or compute_merkle_root(leaf_hashes[:first_size])
+        second_root = str(second_ckpt.merkle_root) or compute_merkle_root(leaf_hashes)
+        consistency_path = build_merkle_consistency_proof(leaf_hashes, first_size)
+
+    verification = verify_merkle_consistency_proof(
+        first_size=first_size,
+        second_size=second_size,
+        first_root=first_root,
+        second_root=second_root,
+        consistency_path=consistency_path,
+    )
+    payload: dict[str, Any] = {
+        "proof_spec": "RFC9162-SHA256-CONSISTENCY",
+        "organization_id": str(org.id),
+        "from_checkpoint_seq": int(first_ckpt.checkpoint_seq),
+        "to_checkpoint_seq": int(second_ckpt.checkpoint_seq),
+        "first_tree_size": first_size,
+        "second_tree_size": second_size,
+        "first_merkle_root": first_root,
+        "second_merkle_root": second_root,
+        "consistency_path": consistency_path,
+        "path_length": len(consistency_path),
+        "verification": verification,
+        "query_target": query_target,
+    }
+    return payload, query_target
