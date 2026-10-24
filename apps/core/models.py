@@ -40,6 +40,7 @@ VALID_WEBHOOK_EVENTS: frozenset[str] = frozenset(
         "scim.user_provisioned",
         "scim.user_deprovisioned",
         "annotator.calibrated",
+        "audit.checkpoint_anchored",
     }
 )
 
@@ -402,6 +403,7 @@ class AuditLog(models.Model):
             ("task_annotated", "Task Annotated"),
             ("task_adjudicated", "Task Adjudicated"),
             ("gold_task_evaluated", "Gold Calibration Task Evaluated"),
+            ("audit_checkpoint_anchored", "Audit Chain Checkpoint Anchored"),
             ("exported", "Dataset Exported"),
         ],
     )
@@ -442,6 +444,75 @@ class AuditLog(models.Model):
 
     def __str__(self) -> str:
         return f"{self.action} {self.resource_type} by {self.user} at {self.created_at}"
+
+
+class AuditChainCheckpoint(models.Model):
+    """Externally notarized & S3 Object-Lock WORM checkpoint over a tenant AuditLog chain."""
+
+    ANCHOR_STATUS_CHOICES = [
+        ("hmac_sealed", "HMAC Sealed"),
+        ("s3_worm_locked", "S3 Object Lock WORM"),
+        ("anchor_error", "External Anchor Error"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name="audit_checkpoints",
+    )
+    checkpoint_seq = models.PositiveBigIntegerField()
+    covered_up_to_seq = models.PositiveBigIntegerField()
+    verified_entries = models.PositiveBigIntegerField()
+    head_hash = models.CharField(max_length=64)
+    manifest_digest = models.CharField(max_length=64)
+    prev_checkpoint_hash = models.CharField(max_length=64, default="0" * 64)
+    checkpoint_hash = models.CharField(max_length=64, db_index=True)
+    signature = models.CharField(max_length=64)
+    anchor_status = models.CharField(
+        max_length=32,
+        choices=ANCHOR_STATUS_CHOICES,
+        default="hmac_sealed",
+    )
+    worm_uri = models.CharField(max_length=512, blank=True, default="")
+    worm_etag = models.CharField(max_length=128, blank=True, default="")
+    worm_version_id = models.CharField(max_length=128, blank=True, default="")
+    retention_until = models.DateTimeField()
+    anchor_error = models.CharField(max_length=500, blank=True, default="")
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        ordering = ["-checkpoint_seq"]
+        indexes = [
+            models.Index(
+                fields=["organization", "-checkpoint_seq"],
+                name="core_auditckpt_org_seq_idx",
+            )
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "checkpoint_seq"],
+                name="core_auditckpt_uniq_org_seq",
+            )
+        ]
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if not self._state.adding:
+            raise ValidationError(
+                "AuditChainCheckpoint entries are cryptographically sealed and immutable."
+            )
+        super().save(*args, **kwargs)
+
+    def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
+        raise ValidationError(
+            "AuditChainCheckpoint entries are cryptographically sealed and immutable."
+        )
+
+    def __str__(self) -> str:
+        return (
+            f"AuditChainCheckpoint(org={self.organization_id}, seq={self.checkpoint_seq}, "
+            f"status={self.anchor_status})"
+        )
 
 
 class OutboxEvent(models.Model):

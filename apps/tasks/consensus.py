@@ -1,4 +1,4 @@
-"""Inter-annotator agreement (IAA) & skill-weighted consensus engine for RLHF task annotations."""
+"""Inter-annotator agreement (IAA) & domain/language skill-weighted consensus engine."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from collections import Counter
 from typing import Any
 
 from apps.core.outbox import enqueue_outbox_event
+from apps.tasks.calibration import resolve_effective_skill_weight
 from apps.tasks.models import AnnotatorCalibration, Task, TaskAnnotation
 
 
@@ -16,7 +17,7 @@ def _score_val(ann: TaskAnnotation, key: str) -> float | None:
 
 
 def evaluate_task_consensus(task: Task) -> dict[str, Any]:
-    """Recompute empirical skill-weighted IAA, consensus choice, and lifecycle status for ``task``."""
+    """Recompute empirical domain/language skill-weighted IAA and lifecycle status for ``task``."""
     annotations = list(TaskAnnotation.objects.filter(task=task).order_by("created_at"))
     total = len(annotations)
     if total == 0:
@@ -31,26 +32,36 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
             "mean_scores": {},
         }
 
-    weight_map: dict[Any, float] = {}
+    cal_map: dict[Any, AnnotatorCalibration] = {}
     if task.organization_id:
         annotator_ids = [a.annotator_id for a in annotations]
-        weight_map = {
-            uid: float(w)
-            for uid, w in AnnotatorCalibration.objects.filter(
+        cal_map = {
+            c.user_id: c
+            for c in AnnotatorCalibration.objects.filter(
                 organization_id=task.organization_id,
                 user_id__in=annotator_ids,
                 gold_evaluated_count__gt=0,
-            ).values_list("user_id", "skill_weight")
+            )
         }
 
     counts = Counter(a.preference for a in annotations)
     unweighted_ranked = counts.most_common()
     unweighted_ratio = round(unweighted_ranked[0][1] / total, 4)
 
+    task_domain = str(task.domain or "general").strip().lower()
     weighted_totals: dict[str, float] = {}
     annotator_weights: list[tuple[TaskAnnotation, float]] = []
     for ann in annotations:
-        w = float(weight_map.get(ann.annotator_id, 1.0))
+        ann_lang = (
+            str(ann.rubric_scores.get("language") or "en").strip().lower()
+            if isinstance(ann.rubric_scores, dict)
+            else "en"
+        )
+        w = resolve_effective_skill_weight(
+            cal_map.get(ann.annotator_id),
+            domain=task_domain,
+            language=ann_lang,
+        )
         annotator_weights.append((ann, w))
         weighted_totals[ann.preference] = weighted_totals.get(ann.preference, 0.0) + w
 
@@ -112,10 +123,12 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
         org_id = str(task.organization_id)
         event_data = {
             "task_id": str(task.id),
+            "domain": task.domain,
+            "difficulty": task.difficulty,
             "consensus_choice": task.consensus_choice,
             "consensus_score": task.consensus_score,
             "annotation_count": total,
-            "skill_weighted": bool(weight_map),
+            "skill_weighted": bool(cal_map),
             "mean_scores": mean_scores,
         }
         enqueue_outbox_event(
@@ -137,7 +150,9 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
         "consensus_choice": task.consensus_choice,
         "consensus_score": task.consensus_score,
         "unweighted_agreement_score": unweighted_ratio,
-        "skill_weighted": bool(weight_map),
+        "skill_weighted": bool(cal_map),
+        "domain": task.domain,
+        "difficulty": task.difficulty,
         "choice_distribution": dict(counts),
         "weighted_distribution": {k: round(v, 4) for k, v in weighted_totals.items()},
         "mean_scores": mean_scores,

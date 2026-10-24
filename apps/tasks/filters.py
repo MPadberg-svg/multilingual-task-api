@@ -46,6 +46,14 @@ class TaskFilter(filters.FilterSet):
         choices=Task._meta.get_field("priority").choices,
         help_text="Filter by task priority.",
     )
+    domain = filters.ChoiceFilter(
+        choices=Task._meta.get_field("domain").choices,
+        help_text="Filter by task domain specialization.",
+    )
+    difficulty = filters.ChoiceFilter(
+        choices=Task._meta.get_field("difficulty").choices,
+        help_text="Filter by task difficulty tier.",
+    )
     is_active = filters.BooleanFilter(
         help_text="Filter by active (non-deleted) state.",
     )
@@ -65,6 +73,8 @@ class TaskFilter(filters.FilterSet):
         fields = [
             "status",
             "priority",
+            "domain",
+            "difficulty",
             "is_active",
             "created_after",
             "created_before",

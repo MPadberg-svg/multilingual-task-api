@@ -249,3 +249,11 @@ def prune_telemetry_and_outbox_history(
         delivery_retention_days=delivery_retention_days,
         chunk_size=chunk_size,
     )
+
+
+@shared_task
+def anchor_audit_chain_checkpoints(batch_size: int = 100) -> dict[str, int]:
+    """Notarize and S3 Object-Lock WORM anchor pending tenant AuditLog hash chains."""
+    from apps.core.audit_chain import anchor_pending_audit_checkpoints
+
+    return anchor_pending_audit_checkpoints(batch_size=batch_size)

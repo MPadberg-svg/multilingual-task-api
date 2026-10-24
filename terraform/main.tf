@@ -370,12 +370,92 @@ resource "aws_cloudwatch_log_group" "api" {
   tags = var.common_tags
 }
 
+resource "aws_s3_bucket" "audit_worm" {
+  count = var.enable_audit_worm_bucket ? 1 : 0
+
+  bucket_prefix       = "${var.project_name}-audit-worm-"
+  object_lock_enabled = true
+  force_destroy       = var.environment != "production"
+
+  tags = var.common_tags
+}
+
+resource "aws_s3_bucket_public_access_block" "audit_worm" {
+  count = var.enable_audit_worm_bucket ? 1 : 0
+
+  bucket                  = aws_s3_bucket.audit_worm[0].id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "audit_worm" {
+  count = var.enable_audit_worm_bucket ? 1 : 0
+
+  bucket = aws_s3_bucket.audit_worm[0].id
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
+}
+
+resource "aws_s3_bucket_object_lock_configuration" "audit_worm" {
+  count = var.enable_audit_worm_bucket ? 1 : 0
+
+  bucket = aws_s3_bucket.audit_worm[0].id
+
+  rule {
+    default_retention {
+      mode = "COMPLIANCE"
+      days = var.audit_worm_retention_days
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "ecs_task_audit_worm" {
+  count = var.enable_audit_worm_bucket ? 1 : 0
+  name  = "${var.project_name}-ecs-task-audit-worm"
+  role  = aws_iam_role.ecs_task.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetBucketObjectLockConfiguration",
+        ]
+        Resource = aws_s3_bucket.audit_worm[0].arn
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:GetObjectRetention",
+          "s3:PutObject",
+          "s3:PutObjectRetention",
+        ]
+        Resource = "${aws_s3_bucket.audit_worm[0].arn}/*"
+      },
+    ]
+  })
+}
+
 locals {
   enable_origin_cloaking = nonsensitive(var.origin_verify_secret != "")
   redis_tls_base_url     = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
   github_oidc_arn        = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
   postgres_replica_host  = var.enable_read_replica ? aws_db_instance.postgres_replica[0].address : ""
+  audit_worm_bucket_name = var.enable_audit_worm_bucket ? aws_s3_bucket.audit_worm[0].bucket : ""
   alarm_actions          = var.alert_sns_topic_arn != "" ? [var.alert_sns_topic_arn] : []
+  canary_rollback_alarms = [
+    aws_cloudwatch_metric_alarm.alb_target_5xx.alarm_name,
+    aws_cloudwatch_metric_alarm.outbox_dead_letter.alarm_name,
+    aws_cloudwatch_metric_alarm.rds_primary_cpu.alarm_name,
+  ]
   secret_arns = compact([
     var.django_secret_key_arn,
     var.db_password_secret_arn,
@@ -396,6 +476,9 @@ locals {
     { name = "TRUSTED_PROXY_COUNT", value = "2" },
     { name = "OTEL_SERVICE_NAME", value = var.project_name },
     { name = "OTEL_EXPORTER_OTLP_ENDPOINT", value = var.otel_exporter_otlp_endpoint },
+    { name = "AUDIT_WORM_S3_BUCKET", value = local.audit_worm_bucket_name },
+    { name = "AUDIT_WORM_S3_REGION", value = var.aws_region },
+    { name = "AUDIT_WORM_RETENTION_DAYS", value = tostring(var.audit_worm_retention_days) },
   ]
   shared_secrets = compact([
     var.django_secret_key_arn != "" ? jsonencode({ name = "SECRET_KEY", valueFrom = var.django_secret_key_arn }) : "",
@@ -542,8 +625,11 @@ resource "aws_ecs_service" "api" {
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.api.arn
 
-  desired_count = var.ecs_desired_count
-  launch_type   = "FARGATE"
+  desired_count                      = var.ecs_desired_count
+  deployment_minimum_healthy_percent = 100
+  deployment_maximum_percent         = 200
+  health_check_grace_period_seconds  = 60
+  launch_type                        = "FARGATE"
 
   network_configuration {
     subnets          = module.vpc.private_subnets
@@ -561,6 +647,17 @@ resource "aws_ecs_service" "api" {
     type = "ECS"
   }
 
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
+  alarms {
+    alarm_names = local.canary_rollback_alarms
+    enable      = true
+    rollback    = true
+  }
+
   tags = var.common_tags
 }
 
@@ -576,6 +673,11 @@ resource "aws_ecs_service" "celery_worker" {
     subnets          = module.vpc.private_subnets
     security_groups  = [aws_security_group.ecs.id]
     assign_public_ip = false
+  }
+
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
   }
 
   tags = var.common_tags
@@ -620,6 +722,49 @@ resource "aws_appautoscaling_policy" "cpu" {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
     }
     target_value = 70.0
+  }
+}
+
+resource "aws_appautoscaling_policy" "alb_requests" {
+  name               = "${var.project_name}-alb-request-autoscaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.ecs.resource_id
+  scalable_dimension = aws_appautoscaling_target.ecs.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.ecs.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ALBRequestCountPerTarget"
+      resource_label         = "${aws_lb.main.arn_suffix}/${aws_lb_target_group.api.arn_suffix}"
+    }
+    target_value       = var.alb_requests_per_target
+    scale_in_cooldown  = 180
+    scale_out_cooldown = 60
+  }
+}
+
+resource "aws_appautoscaling_target" "celery_worker" {
+  max_capacity       = var.celery_max_capacity
+  min_capacity       = 1
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.celery_worker.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "celery_cpu" {
+  name               = "${var.project_name}-celery-cpu-autoscaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.celery_worker.resource_id
+  scalable_dimension = aws_appautoscaling_target.celery_worker.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.celery_worker.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value       = 70.0
+    scale_in_cooldown  = 180
+    scale_out_cooldown = 60
   }
 }
 
@@ -998,6 +1143,16 @@ resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
     LoadBalancer = aws_lb.main.arn_suffix
     TargetGroup  = aws_lb_target_group.api.arn_suffix
   }
+
+  tags = var.common_tags
+}
+
+resource "aws_cloudwatch_composite_alarm" "canary_rollout_guard" {
+  alarm_name        = "${var.project_name}-canary-rollout-guard"
+  alarm_description = "Composite canary rollout health gate combining ALB 5xx, Outbox DLQ, and RDS CPU"
+  alarm_rule        = "ALARM(${aws_cloudwatch_metric_alarm.alb_target_5xx.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.outbox_dead_letter.alarm_name}) OR ALARM(${aws_cloudwatch_metric_alarm.rds_primary_cpu.alarm_name})"
+  alarm_actions     = local.alarm_actions
+  ok_actions        = local.alarm_actions
 
   tags = var.common_tags
 }

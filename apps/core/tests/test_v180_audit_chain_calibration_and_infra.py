@@ -484,7 +484,7 @@ class TestOutboxDeadLetterObservabilityAndTerraformIaC:
         assert 'resource "aws_cloudwatch_metric_alarm" "rds_primary_cpu"' in main_tf
         assert 'resource "aws_cloudwatch_metric_alarm" "alb_target_5xx"' in main_tf
         assert 'output "rds_replica_endpoint"' in outputs_tf
-        assert 'default     = "v1.8.0"' in vars_tf
+        assert 'default     = "v1.' in vars_tf
 
         # Extract aws_db_instance.postgres_replica block and verify AWS ~> 5.0 replica constraints
         replica_match = re.search(

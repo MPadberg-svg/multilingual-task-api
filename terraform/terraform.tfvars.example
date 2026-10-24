@@ -8,7 +8,7 @@ project_name = "multilingual-task-api"
 environment  = "production"
 
 # Immutable container image tag (e.g. Git commit SHA or release tag pushed to ECR)
-image_tag = "v1.8.0"
+image_tag = "v1.9.0"
 
 # GitHub OIDC keyless deployment configuration
 github_repository           = "MPadberg-svg/multilingual-task-api"
@@ -38,6 +38,12 @@ enable_read_replica       = true
 db_replica_instance_class = ""
 replica_lag_alarm_seconds = 30
 alert_sns_topic_arn       = ""
+
+# S3 Object Lock WORM audit checkpointing & ECS/Celery autoscaling
+enable_audit_worm_bucket  = true
+audit_worm_retention_days = 365
+alb_requests_per_target   = 600
+celery_max_capacity       = 6
 
 # Redis & ECS Fargate sizing
 redis_node_type   = "cache.t3.micro"

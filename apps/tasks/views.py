@@ -43,7 +43,7 @@ from apps.core.models import AuditLog
 from apps.core.outbox import enqueue_outbox_event
 from apps.core.rls import get_effective_rls_scope, rls_context
 from apps.core.views import record_cache_hit, record_cache_miss
-from apps.tasks.calibration import evaluate_gold_annotation, should_inject_gold_task
+from apps.tasks.calibration import evaluate_gold_annotation, get_annotator_claim_routing
 from apps.tasks.consensus import evaluate_task_consensus
 from apps.tasks.filters import TaskFilter
 from apps.tasks.models import Task, TaskAnnotation
@@ -259,16 +259,21 @@ class TaskViewSet(viewsets.ModelViewSet):
         req_serializer.is_valid(raise_exception=True)
         lease_seconds = int(req_serializer.validated_data["lease_seconds"])
         priority_filter = req_serializer.validated_data["priority"]
+        domain_filter = req_serializer.validated_data["domain"]
+        difficulty_filter = req_serializer.validated_data["difficulty"]
 
         organization = getattr(request, "organization", None)
         now = timezone.now()
 
         with transaction.atomic():
-            inject_gold_first = (
-                should_inject_gold_task(organization, request.user)
-                if organization is not None
-                else False
-            )
+            if organization is not None:
+                inject_gold_first, is_probation, trusted_domains = get_annotator_claim_routing(
+                    organization,
+                    request.user,
+                )
+            else:
+                inject_gold_first, is_probation, trusted_domains = False, False, []
+
             already_annotated = TaskAnnotation.objects.filter(
                 task=OuterRef("pk"),
                 annotator=request.user,
@@ -285,6 +290,15 @@ class TaskViewSet(viewsets.ModelViewSet):
                 default=Value(0 if inject_gold_first else 1),
                 output_field=IntegerField(),
             )
+            specialist_rank = (
+                Case(
+                    When(domain__in=trusted_domains, then=Value(1)),
+                    default=Value(0),
+                    output_field=IntegerField(),
+                )
+                if trusted_domains
+                else Value(0, output_field=IntegerField())
+            )
             capacity_filter = (
                 Q(is_gold=True) | Q(is_gold=False, existing_ann_count__lt=F("required_annotations"))
                 if organization is not None
@@ -300,6 +314,7 @@ class TaskViewSet(viewsets.ModelViewSet):
                     has_my_annotation=Exists(already_annotated),
                     priority_rank=priority_rank,
                     gold_rank=gold_rank,
+                    specialist_rank=specialist_rank,
                 )
                 .filter(has_my_annotation=False)
                 .filter(capacity_filter)
@@ -311,16 +326,25 @@ class TaskViewSet(viewsets.ModelViewSet):
             )
             if organization is not None:
                 candidates = candidates.filter(organization=organization)
+                if is_probation:
+                    candidates = candidates.exclude(is_gold=False, difficulty="expert")
             else:
                 candidates = candidates.filter(user=request.user)
 
             if priority_filter:
                 candidates = candidates.filter(priority=priority_filter)
+            if domain_filter:
+                candidates = candidates.filter(domain=domain_filter)
+            if difficulty_filter:
+                candidates = candidates.filter(difficulty=difficulty_filter)
 
             candidate_id_list = list(
-                candidates.order_by("-gold_rank", "-priority_rank", "created_at").values_list(
-                    "id", flat=True
-                )[:25]
+                candidates.order_by(
+                    "-gold_rank",
+                    "-specialist_rank",
+                    "-priority_rank",
+                    "created_at",
+                ).values_list("id", flat=True)[:25]
             )
             if not candidate_id_list:
                 return Response(
@@ -335,8 +359,12 @@ class TaskViewSet(viewsets.ModelViewSet):
                     | Q(claimed_until__lte=now)
                     | Q(claimed_by=request.user)
                 )
-                .annotate(priority_rank=priority_rank, gold_rank=gold_rank)
-                .order_by("-gold_rank", "-priority_rank", "created_at")
+                .annotate(
+                    priority_rank=priority_rank,
+                    gold_rank=gold_rank,
+                    specialist_rank=specialist_rank,
+                )
+                .order_by("-gold_rank", "-specialist_rank", "-priority_rank", "created_at")
             )
             if connection.features.has_select_for_update_skip_locked:
                 lock_qs = lock_qs.select_for_update(skip_locked=True)
@@ -675,6 +703,8 @@ class TaskViewSet(viewsets.ModelViewSet):
                 "id": str(task_obj.id),
                 "status": task_obj.status,
                 "priority": task_obj.priority,
+                "domain": task_obj.domain,
+                "difficulty": task_obj.difficulty,
                 "required_annotations": task_obj.required_annotations,
                 "consensus_choice": task_obj.consensus_choice,
                 "consensus_score": task_obj.consensus_score,

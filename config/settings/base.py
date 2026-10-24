@@ -341,6 +341,11 @@ OUTBOX_RETENTION_DAYS: int = config("OUTBOX_RETENTION_DAYS", default=14, cast=in
 WEBHOOK_DELIVERY_RETENTION_DAYS: int = config(
     "WEBHOOK_DELIVERY_RETENTION_DAYS", default=30, cast=int
 )
+AUDIT_WORM_S3_BUCKET: str = config("AUDIT_WORM_S3_BUCKET", default="").strip()
+AUDIT_WORM_S3_REGION: str = config("AUDIT_WORM_S3_REGION", default="us-east-1").strip()
+AUDIT_WORM_S3_ENDPOINT_HOST: str = config("AUDIT_WORM_S3_ENDPOINT_HOST", default="").strip()
+AUDIT_WORM_RETENTION_DAYS: int = config("AUDIT_WORM_RETENTION_DAYS", default=365, cast=int)
+AUDIT_ANCHOR_SIGNING_KEY: str = config("AUDIT_ANCHOR_SIGNING_KEY", default="").strip()
 
 CELERY_BEAT_SCHEDULE: dict[str, dict[str, Any]] = {
     "drain-transactional-outbox": {
@@ -352,6 +357,11 @@ CELERY_BEAT_SCHEDULE: dict[str, dict[str, Any]] = {
         "task": "apps.tasks.tasks.prune_telemetry_and_outbox_history",
         "schedule": 86400.0,
         "kwargs": {"chunk_size": 500},
+    },
+    "anchor-audit-chain-checkpoints": {
+        "task": "apps.tasks.tasks.anchor_audit_chain_checkpoints",
+        "schedule": 3600.0,
+        "kwargs": {"batch_size": 100},
     },
 }
 

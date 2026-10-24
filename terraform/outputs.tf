@@ -80,6 +80,16 @@ output "rds_replica_endpoint" {
   sensitive   = true
 }
 
+output "audit_worm_bucket_name" {
+  description = "S3 Object Lock (COMPLIANCE mode) WORM bucket for AuditChainCheckpoint archives"
+  value       = try(aws_s3_bucket.audit_worm[0].bucket, "")
+}
+
+output "canary_composite_alarm_arn" {
+  description = "CloudWatch Composite Alarm ARN gating ECS API canary deployments"
+  value       = aws_cloudwatch_composite_alarm.canary_rollout_guard.arn
+}
+
 output "redis_endpoint" {
   description = "ElastiCache Redis primary endpoint"
   value       = aws_elasticache_replication_group.redis.primary_endpoint_address

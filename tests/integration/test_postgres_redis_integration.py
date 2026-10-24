@@ -28,11 +28,15 @@ from django_redis import get_redis_connection
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
-from apps.core.audit_chain import verify_organization_audit_chain
+from apps.core.audit_chain import (
+    create_organization_audit_checkpoint,
+    verify_organization_audit_chain,
+)
 from apps.core.db_router import use_read_replica
 from apps.core.events import EventPublisher, broadcast_task_websocket_event
 from apps.core.models import (
     AIUsageLog,
+    AuditChainCheckpoint,
     AuditLog,
     Organization,
     OrganizationMember,
@@ -775,5 +779,79 @@ def test_live_postgres_audit_hash_chain_concurrency_and_calibration_replica_rls(
         assert cal_http.headers["X-Query-Target"] == "replica"
         assert cal_http.json()["calibrated_annotators"] == 1
         assert cal_http.json()["annotators"][0]["email"] == owner_a.email
+    finally:
+        connections.close_all()
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "replica"])
+def test_live_postgres_audit_checkpoint_rls_and_replica_routing() -> None:
+    """Verify PostgreSQL 16 FORCE RLS & replica routing on core_auditchaincheckpoint."""
+    suffix = uuid.uuid4().hex[:8]
+    owner_a = User.objects.create_user(
+        email=f"v190-owner-a-{suffix}@example.com", password="Password123!"
+    )
+    owner_b = User.objects.create_user(
+        email=f"v190-owner-b-{suffix}@example.com", password="Password123!"
+    )
+    org_a = Organization.objects.create(
+        name=f"V190 Org A {suffix}", slug=f"v190-org-a-{suffix}", plan="enterprise"
+    )
+    org_b = Organization.objects.create(
+        name=f"V190 Org B {suffix}", slug=f"v190-org-b-{suffix}", plan="enterprise"
+    )
+    OrganizationMember.objects.create(user=owner_a, organization=org_a, role="owner")
+    OrganizationMember.objects.create(user=owner_b, organization=org_b, role="owner")
+
+    AuditLog.objects.create(
+        organization=org_a,
+        user=owner_a,
+        action="created",
+        resource_type="Task",
+        resource_id="ckpt-a-1",
+    )
+    AuditLog.objects.create(
+        organization=org_b,
+        user=owner_b,
+        action="created",
+        resource_type="Task",
+        resource_id="ckpt-b-1",
+    )
+    ckpt_a, created_a = create_organization_audit_checkpoint(org_a)
+    ckpt_b, created_b = create_organization_audit_checkpoint(org_b)
+    assert created_a is True and ckpt_a is not None
+    assert created_b is True and ckpt_b is not None
+
+    primary_conn = connections["default"]
+    replica_conn = connections["replica"]
+    try:
+        with primary_conn.cursor() as p_cur, replica_conn.cursor() as r_cur:
+            p_cur.execute("""
+                SELECT relname, relrowsecurity, relforcerowsecurity
+                FROM pg_class
+                WHERE relname = 'core_auditchaincheckpoint'
+                """)
+            assert p_cur.fetchall() == [("core_auditchaincheckpoint", True, True)]
+
+            r_cur.execute("SET ROLE mltask_rls_app")
+            try:
+                with rls_context(organization_id=str(org_a.id)), use_read_replica() as r_target:
+                    assert r_target == "replica"
+                    rep_ckpts = AuditChainCheckpoint.objects.all()
+                    assert rep_ckpts.db == "replica"
+                    assert [str(c.id) for c in rep_ckpts] == [str(ckpt_a.id)]
+                    assert str(ckpt_b.id) not in {str(c.id) for c in rep_ckpts}
+            finally:
+                r_cur.execute("RESET ROLE")
+
+        token_a = str(RefreshToken.for_user(owner_a).access_token)
+        client_a = APIClient()
+        client_a.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {token_a}",
+            HTTP_X_ORGANIZATION_ID=str(org_a.id),
+        )
+        list_resp = client_a.get(f"/api/v1/organizations/{org_a.id}/audit-logs/checkpoints/")
+        assert list_resp.status_code == 200
+        assert list_resp.headers["X-Query-Target"] == "replica"
+        assert [row["id"] for row in list_resp.json()["results"]] == [str(ckpt_a.id)]
     finally:
         connections.close_all()
