@@ -30,9 +30,11 @@ from apps.core.tenant_views import (
     ExplorerConsoleView,
     LogoutView,
     OIDCTokenExchangeView,
+    OrganizationAnnotatorCalibrationView,
     OrganizationAPIKeyDetailView,
     OrganizationAPIKeyListCreateView,
     OrganizationAuditLogListView,
+    OrganizationAuditLogVerifyView,
     OrganizationDetailView,
     OrganizationFinOpsView,
     OrganizationListCreateView,
@@ -104,6 +106,16 @@ urlpatterns = [
         "api/v1/organizations/<uuid:org_id>/audit-logs/",
         OrganizationAuditLogListView.as_view(),
         name="organization-audit-logs",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/audit-logs/verify/",
+        OrganizationAuditLogVerifyView.as_view(),
+        name="organization-audit-logs-verify",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/annotators/calibration/",
+        OrganizationAnnotatorCalibrationView.as_view(),
+        name="organization-annotators-calibration",
     ),
     path(
         "api/v1/organizations/<uuid:org_id>/usage/",

@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.8.0] — 2026-10-24
+
+### Added
+- **Cryptographic Audit Log Hash-Chaining & Tamper Verification (`apps/core/audit_chain.py`, `apps/core/models.py`, `apps/core/tenant_views.py`, `apps/core/migrations/0006_v180_audit_chain_and_gold_calibration.py`)**:
+  - Sealed every `AuditLog` record at insert time with a strictly monotonic per-tenant `chain_seq`, `prev_hash` (`"0" * 64` at genesis), and canonical SHA-256 `entry_hash`, serialized under concurrent PostgreSQL 16 writers via `pg_advisory_xact_lock(hashtext(...))`, enforced `ValidationError` immutability on `save()`/`delete()`, and added an automatic migration backfill for pre-existing audit rows.
+  - Added replica-routed `GET /api/v1/organizations/{org_id}/audit-logs/verify/` returning `valid`, `verified_entries`, `head_hash`, `manifest_digest`, and detailed tamper diagnostics (`entry_hash_mismatch`, `prev_hash_mismatch`, `sequence_gap`) for SOC 2 Type II / ISO 27001 evidence exports.
+- **Annotator Calibration Gold-Tasks & Dynamic Skill-Weighted Consensus (`apps/tasks/calibration.py`, `apps/tasks/consensus.py`, `apps/tasks/models.py`, `apps/tasks/serializers.py`, `apps/tasks/views.py`, `apps/tasks/migrations/0009_postgres_rls_v180_calibration.py`)**:
+  - Added `is_gold` and `gold_choice` on `Task` (`admin`/`owner` RBAC write guard, zero-query blind redaction + separate `adm:` Redis cache namespace so non-admin annotators never observe gold metadata, and default gold exclusion from `/tasks/export/`) plus PostgreSQL 16 `FORCE ROW LEVEL SECURITY`-protected `AnnotatorCalibration`.
+  - Integrated automatic blind gold-task injection into `POST /api/v1/tasks/claim/` (prioritized for uncalibrated annotators and periodic 5-task spot checks), reusable lease release + immediate Jeffreys `Beta(0.5, 0.5)` Bayesian `skill_weight` scoring (`annotator.calibrated` Outbox event + `gold_task_evaluated` audit log), empirical skill-weighted consensus in `evaluate_task_consensus`, and replica-routed `GET /api/v1/organizations/{org_id}/annotators/calibration/`.
+- **Terraform RDS Read-Replica, Outbox Dead-Letter Telemetry & CloudWatch Alarms (`terraform/main.tf`, `terraform/variables.tf`, `terraform/outputs.tf`, `apps/core/outbox.py`, `apps/core/views.py`)**:
+  - Added optional encrypted `aws_db_instance.postgres_replica` (`enable_read_replica`, `db_replica_instance_class`) wired into ECS `POSTGRES_REPLICA_HOST` and exported as `rds_replica_endpoint`.
+  - Added structured `"Outbox event moved to dead-letter"` logging + Prometheus `mltask_outbox_pending_events` / `mltask_outbox_dead_letter_events` gauges on `/api/v1/metrics/`, plus CloudWatch Log Metric Filter and Alarms (`OutboxDeadLetterCount`, RDS `ReplicaLag`, primary RDS `CPUUtilization`, and ALB `HTTPCode_Target_5XX_Count`) wired to optional `alert_sns_topic_arn`.
+
+---
+
 ## [1.7.0] — 2026-10-22
 
 ### Added

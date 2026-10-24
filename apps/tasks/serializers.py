@@ -14,6 +14,7 @@ from django.conf import settings
 from django.db import transaction
 
 from rest_framework import serializers
+from rest_framework.exceptions import PermissionDenied
 
 from apps.core.security import InputValidator
 from apps.tasks.models import Task, TaskAnnotation
@@ -63,6 +64,7 @@ class TaskSerializer(serializers.ModelSerializer):
         read_only=True,
     )
     annotation_count = serializers.SerializerMethodField()
+    gold_choice = serializers.CharField(required=False, allow_blank=True, default="")
 
     class Meta:
         model = Task
@@ -80,6 +82,8 @@ class TaskSerializer(serializers.ModelSerializer):
             "claimed_until",
             "consensus_score",
             "consensus_choice",
+            "is_gold",
+            "gold_choice",
             "annotation_count",
             "auto_translate",
             "is_active",
@@ -105,6 +109,19 @@ class TaskSerializer(serializers.ModelSerializer):
         request = self.context.get("request")
         lang = getattr(request, "language", "en") if request is not None else "en"
         return str(lang or "en").lower()
+
+    def _can_view_gold(self, instance: Task | None = None) -> bool:
+        """Return True iff the caller may inspect or author hidden gold calibration metadata."""
+        request = self.context.get("request")
+        if instance is not None and instance.organization_id is None:
+            return request is not None
+        if request is None:
+            return False
+        if instance is None and getattr(request, "organization", None) is None:
+            return True
+        if bool(getattr(request.user, "is_superuser", False)):
+            return True
+        return getattr(request, "membership_role", None) in ("admin", "owner")
 
     def get_language(self, obj: Task) -> str:
         """Return the resolved language for the current request."""
@@ -224,6 +241,58 @@ class TaskSerializer(serializers.ModelSerializer):
                     )
 
         attrs["translations"] = translations_data
+
+        gold_fields_supplied = "is_gold" in attrs or (
+            "gold_choice" in self.initial_data
+            if isinstance(getattr(self, "initial_data", None), dict)
+            else False
+        )
+        if gold_fields_supplied and not self._can_view_gold(self.instance):
+            raise PermissionDenied(
+                "Only organization admins or owners can configure gold calibration tasks."
+            )
+
+        alias_map = {
+            "": "",
+            "a": "response_a",
+            "b": "response_b",
+            "response_a": "response_a",
+            "response_b": "response_b",
+            "tie": "tie",
+        }
+        raw_gold_choice = attrs.get(
+            "gold_choice",
+            getattr(self.instance, "gold_choice", "") if self.instance is not None else "",
+        )
+        norm_gold = str(raw_gold_choice or "").strip().lower()
+        if norm_gold not in alias_map:
+            raise serializers.ValidationError(
+                {"gold_choice": "Must be one of 'response_a', 'response_b', or 'tie'."}
+            )
+        resolved_gold_choice = alias_map[norm_gold]
+        resolved_is_gold = bool(
+            attrs.get(
+                "is_gold",
+                getattr(self.instance, "is_gold", False) if self.instance is not None else False,
+            )
+        )
+
+        if resolved_is_gold and not resolved_gold_choice:
+            raise serializers.ValidationError(
+                {
+                    "gold_choice": (
+                        "Gold calibration tasks require a gold_choice ('response_a', "
+                        "'response_b', or 'tie')."
+                    )
+                }
+            )
+        if not resolved_is_gold and resolved_gold_choice:
+            raise serializers.ValidationError(
+                {"is_gold": "Set is_gold=true when specifying gold_choice."}
+            )
+        if "gold_choice" in attrs or resolved_is_gold:
+            attrs["gold_choice"] = resolved_gold_choice
+
         return attrs
 
     def to_representation(self, instance: Task) -> dict[str, Any]:
@@ -245,7 +314,7 @@ class TaskSerializer(serializers.ModelSerializer):
         )
         dt_field = serializers.DateTimeField()
 
-        return {
+        rep: dict[str, Any] = {
             "id": str(instance.id),
             "title": resolved_title,
             "description": resolved_description,
@@ -270,6 +339,10 @@ class TaskSerializer(serializers.ModelSerializer):
             "updated_at": dt_field.to_representation(instance.updated_at),
             "user": instance.user_id,
         }
+        if self._can_view_gold(instance):
+            rep["is_gold"] = instance.is_gold
+            rep["gold_choice"] = instance.gold_choice
+        return rep
 
     @transaction.atomic
     def create(self, validated_data: dict[str, Any]) -> Task:

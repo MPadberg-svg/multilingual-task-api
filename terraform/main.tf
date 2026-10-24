@@ -152,6 +152,27 @@ resource "aws_db_instance" "postgres" {
   tags = var.common_tags
 }
 
+resource "aws_db_instance" "postgres_replica" {
+  count = var.enable_read_replica ? 1 : 0
+
+  identifier          = "${var.project_name}-postgres-replica"
+  replicate_source_db = aws_db_instance.postgres.identifier
+  instance_class      = var.db_replica_instance_class != "" ? var.db_replica_instance_class : var.db_instance_class
+  storage_encrypted   = true
+
+  vpc_security_group_ids = [aws_security_group.rds.id]
+  publicly_accessible    = false
+
+  multi_az                     = false
+  auto_minor_version_upgrade   = true
+  deletion_protection          = var.environment == "production"
+  skip_final_snapshot          = true
+  copy_tags_to_snapshot        = true
+  performance_insights_enabled = true
+
+  tags = var.common_tags
+}
+
 resource "aws_elasticache_replication_group" "redis" {
   replication_group_id = "${var.project_name}-redis"
   description          = "Redis cluster for multilingual-task-api"
@@ -353,6 +374,8 @@ locals {
   enable_origin_cloaking = nonsensitive(var.origin_verify_secret != "")
   redis_tls_base_url     = "rediss://${aws_elasticache_replication_group.redis.primary_endpoint_address}:6379"
   github_oidc_arn        = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : var.existing_github_oidc_provider_arn
+  postgres_replica_host  = var.enable_read_replica ? aws_db_instance.postgres_replica[0].address : ""
+  alarm_actions          = var.alert_sns_topic_arn != "" ? [var.alert_sns_topic_arn] : []
   secret_arns = compact([
     var.django_secret_key_arn,
     var.db_password_secret_arn,
@@ -365,6 +388,7 @@ locals {
     { name = "POSTGRES_DB", value = var.db_name },
     { name = "POSTGRES_USER", value = var.db_username },
     { name = "POSTGRES_HOST", value = aws_db_instance.postgres.address },
+    { name = "POSTGRES_REPLICA_HOST", value = local.postgres_replica_host },
     { name = "POSTGRES_PORT", value = "5432" },
     { name = "REDIS_URL", value = "${local.redis_tls_base_url}/0" },
     { name = "CELERY_BROKER_URL", value = "${local.redis_tls_base_url}/1" },
@@ -877,6 +901,102 @@ resource "aws_cloudfront_distribution" "cdn" {
 
   viewer_certificate {
     cloudfront_default_certificate = true
+  }
+
+  tags = var.common_tags
+}
+
+resource "aws_cloudwatch_log_metric_filter" "outbox_dead_letter" {
+  name           = "${var.project_name}-outbox-dead-letter"
+  pattern        = "\"Outbox event moved to dead-letter\""
+  log_group_name = aws_cloudwatch_log_group.api.name
+
+  metric_transformation {
+    name          = "OutboxDeadLetterCount"
+    namespace     = "${var.project_name}/Outbox"
+    value         = "1"
+    default_value = "0"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "outbox_dead_letter" {
+  alarm_name          = "${var.project_name}-outbox-dead-letter"
+  alarm_description   = "Transactional Outbox events exhausted retries and entered dead-letter state"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 1
+  metric_name         = "OutboxDeadLetterCount"
+  namespace           = "${var.project_name}/Outbox"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 1
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  tags = var.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_replica_lag" {
+  count = var.enable_read_replica ? 1 : 0
+
+  alarm_name          = "${var.project_name}-rds-replica-lag"
+  alarm_description   = "RDS PostgreSQL read-replica replication lag exceeded threshold"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "ReplicaLag"
+  namespace           = "AWS/RDS"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = var.replica_lag_alarm_seconds
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.postgres_replica[0].id
+  }
+
+  tags = var.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "rds_primary_cpu" {
+  alarm_name          = "${var.project_name}-rds-primary-cpu"
+  alarm_description   = "Primary RDS PostgreSQL CPU utilization exceeded 80 percent"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "CPUUtilization"
+  namespace           = "AWS/RDS"
+  period              = 60
+  statistic           = "Average"
+  threshold           = 80
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    DBInstanceIdentifier = aws_db_instance.postgres.id
+  }
+
+  tags = var.common_tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
+  alarm_name          = "${var.project_name}-alb-target-5xx"
+  alarm_description   = "ALB API target group 5xx error count exceeded threshold"
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  evaluation_periods  = 2
+  metric_name         = "HTTPCode_Target_5XX_Count"
+  namespace           = "AWS/ApplicationELB"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 10
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
+
+  dimensions = {
+    LoadBalancer = aws_lb.main.arn_suffix
+    TargetGroup  = aws_lb_target_group.api.arn_suffix
   }
 
   tags = var.common_tags

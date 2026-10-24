@@ -28,10 +28,12 @@ from django_redis import get_redis_connection
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import AccessToken, RefreshToken
 
+from apps.core.audit_chain import verify_organization_audit_chain
 from apps.core.db_router import use_read_replica
 from apps.core.events import EventPublisher, broadcast_task_websocket_event
 from apps.core.models import (
     AIUsageLog,
+    AuditLog,
     Organization,
     OrganizationMember,
     OrganizationSSOConfig,
@@ -41,7 +43,7 @@ from apps.core.models import (
 from apps.core.outbox import drain_outbox_batch
 from apps.core.rls import rls_context
 from apps.core.views import record_ai_token_usage
-from apps.tasks.models import Task
+from apps.tasks.models import AnnotatorCalibration, Task
 from config.asgi import application
 
 User = get_user_model()
@@ -664,5 +666,114 @@ def test_postgres_read_replica_routing_preserves_rls_tenant_isolation_and_v170_p
         assert finops_resp.status_code == 200
         assert finops_resp.headers["X-Query-Target"] == "replica"
         assert finops_resp.json()["current_usage"]["tokens_used"] == 500
+    finally:
+        connections.close_all()
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "replica"])
+def test_live_postgres_audit_hash_chain_concurrency_and_calibration_replica_rls() -> None:
+    """Verify pg_advisory_xact_lock audit chain serialization and calibration replica RLS."""
+    assert "replica" in settings.DATABASES
+    suffix = uuid.uuid4().hex[:8]
+    owner_a = User.objects.create_user(
+        email=f"v180-owner-a-{suffix}@example.com", password="Password123!"
+    )
+    owner_b = User.objects.create_user(
+        email=f"v180-owner-b-{suffix}@example.com", password="Password123!"
+    )
+    org_a = Organization.objects.create(
+        name=f"V180 Org A {suffix}", slug=f"v180-org-a-{suffix}", plan="enterprise", max_users=30
+    )
+    org_b = Organization.objects.create(
+        name=f"V180 Org B {suffix}", slug=f"v180-org-b-{suffix}", plan="enterprise", max_users=30
+    )
+    OrganizationMember.objects.create(user=owner_a, organization=org_a, role="owner")
+    OrganizationMember.objects.create(user=owner_b, organization=org_b, role="owner")
+
+    cal_a = AnnotatorCalibration.objects.create(
+        organization=org_a,
+        user=owner_a,
+        gold_evaluated_count=4,
+        gold_correct_count=4,
+        accuracy_rate=1.0,
+        skill_weight=1.36,
+    )
+    cal_b = AnnotatorCalibration.objects.create(
+        organization=org_b,
+        user=owner_b,
+        gold_evaluated_count=4,
+        gold_correct_count=1,
+        accuracy_rate=0.25,
+        skill_weight=0.52,
+    )
+
+    # 8 concurrent writers contend on the same tenant's AuditLog hash chain via pg_advisory_xact_lock
+    barrier = threading.Barrier(8)
+
+    def _insert_audit(worker_idx: int) -> int:
+        try:
+            barrier.wait(timeout=10.0)
+            entry = AuditLog.objects.create(
+                organization=org_a,
+                user=owner_a,
+                action="task_annotated",
+                resource_type="TaskAnnotation",
+                resource_id=f"concurrent-{worker_idx}",
+                metadata={"worker": worker_idx},
+            )
+            return int(entry.chain_seq)
+        finally:
+            connections.close_all()
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        seqs = sorted(pool.map(_insert_audit, range(8)))
+
+    assert seqs == [1, 2, 3, 4, 5, 6, 7, 8]
+
+    primary_conn = connections["default"]
+    replica_conn = connections["replica"]
+    try:
+        report, target = verify_organization_audit_chain(org_a)
+        assert target == "replica"
+        assert report["valid"] is True
+        assert report["verified_entries"] == 8
+        assert report["violations"] == []
+
+        with primary_conn.cursor() as p_cur, replica_conn.cursor() as r_cur:
+            p_cur.execute("""
+                SELECT relname, relrowsecurity, relforcerowsecurity
+                FROM pg_class
+                WHERE relname = 'tasks_annotatorcalibration'
+                """)
+            assert p_cur.fetchall() == [("tasks_annotatorcalibration", True, True)]
+
+            r_cur.execute("SET ROLE mltask_rls_app")
+            try:
+                with rls_context(organization_id=str(org_a.id)), use_read_replica() as r_target:
+                    assert r_target == "replica"
+                    rep_cals = AnnotatorCalibration.objects.all()
+                    assert rep_cals.db == "replica"
+                    assert [str(c.id) for c in rep_cals] == [str(cal_a.id)]
+                    assert str(cal_b.id) not in {str(c.id) for c in rep_cals}
+            finally:
+                r_cur.execute("RESET ROLE")
+
+        token_a = str(RefreshToken.for_user(owner_a).access_token)
+        client_a = APIClient()
+        client_a.credentials(
+            HTTP_AUTHORIZATION=f"Bearer {token_a}",
+            HTTP_X_ORGANIZATION_ID=str(org_a.id),
+        )
+        verify_http = client_a.get(f"/api/v1/organizations/{org_a.id}/audit-logs/verify/")
+        assert verify_http.status_code == 200
+        assert verify_http.headers["X-Query-Target"] == "replica"
+        assert verify_http.json()["valid"] is True
+        assert verify_http.json()["verified_entries"] == 8
+
+        cal_http = client_a.get(f"/api/v1/organizations/{org_a.id}/annotators/calibration/")
+        assert cal_http.status_code == 200
+        assert cal_http.headers["X-Query-Target"] == "replica"
+        assert cal_http.json()["calibrated_annotators"] == 1
+        assert cal_http.json()["annotators"][0]["email"] == owner_a.email
     finally:
         connections.close_all()

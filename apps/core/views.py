@@ -25,6 +25,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.core.finops import record_org_ai_spend_and_alerts
+from apps.core.models import OutboxEvent
+from apps.core.rls import rls_bypass
 from apps.core.throttling import HealthCheckAnonRateThrottle
 
 logger = logging.getLogger(__name__)
@@ -422,6 +424,26 @@ class MetricsView(APIView):
             "# TYPE mltask_ai_estimated_cost_usd_total counter",
             f"mltask_ai_estimated_cost_usd_total {ai_cost_usd:.6f}",
         ]
+
+        outbox_pending = 0
+        outbox_dead_letter = 0
+        try:
+            with rls_bypass():
+                outbox_pending = OutboxEvent.objects.filter(status="pending").count()
+                outbox_dead_letter = OutboxEvent.objects.filter(status="failed").count()
+        except (DatabaseError, OperationalError):
+            logger.debug("Skipping Outbox Prometheus gauges due to transient DB unavailability.")
+
+        metrics.extend(
+            [
+                "# HELP mltask_outbox_pending_events Current pending Transactional Outbox events.",
+                "# TYPE mltask_outbox_pending_events gauge",
+                f"mltask_outbox_pending_events {outbox_pending}",
+                "# HELP mltask_outbox_dead_letter_events Current dead-letter Outbox events.",
+                "# TYPE mltask_outbox_dead_letter_events gauge",
+                f"mltask_outbox_dead_letter_events {outbox_dead_letter}",
+            ]
+        )
         return HttpResponse(
             "\n".join(metrics) + "\n",
             content_type="text/plain; version=0.0.4; charset=utf-8",

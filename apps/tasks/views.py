@@ -43,6 +43,7 @@ from apps.core.models import AuditLog
 from apps.core.outbox import enqueue_outbox_event
 from apps.core.rls import get_effective_rls_scope, rls_context
 from apps.core.views import record_cache_hit, record_cache_miss
+from apps.tasks.calibration import evaluate_gold_annotation, should_inject_gold_task
 from apps.tasks.consensus import evaluate_task_consensus
 from apps.tasks.filters import TaskFilter
 from apps.tasks.models import Task, TaskAnnotation
@@ -96,6 +97,15 @@ def _scope_id_for_request(request: Request) -> str:
     return str(request.user.id)
 
 
+def _is_org_gold_admin(request: Request) -> bool:
+    """Return True when the request is scoped to an org with admin/owner gold visibility."""
+    if getattr(request, "organization", None) is None:
+        return False
+    if bool(getattr(request.user, "is_superuser", False)):
+        return True
+    return getattr(request, "membership_role", None) in ("admin", "owner")
+
+
 def _query_fingerprint(request: Request) -> str:
     """Deterministic digest of query parameters excluding ``lang``."""
     items: list[tuple[str, str]] = []
@@ -136,8 +146,10 @@ def invalidate_task_caches_for_scopes(
         keys_to_delete: set[str] = set()
         for lang in languages:
             keys_to_delete.add(_cache_key("task_list", scope_id, lang, ""))
+            keys_to_delete.add(_cache_key("task_list", scope_id, lang, "adm:"))
             if task_id:
                 keys_to_delete.add(_cache_key("task_detail", scope_id, lang, str(task_id)))
+                keys_to_delete.add(_cache_key("task_detail", scope_id, lang, f"adm:{task_id}"))
 
         idx_key = _cache_index_key(scope_id)
         tracked = cache.get(idx_key)
@@ -177,11 +189,12 @@ class TaskViewSet(viewsets.ModelViewSet):
         return base_qs.filter(user=self.request.user)
 
     def list(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        """List tasks with query-aware, language-scoped Redis caching."""
+        """List tasks with query-aware, language-scoped, gold-blindness-safe Redis caching."""
         scope_id = _scope_id_for_request(request)
         lang = getattr(request, "language", "en")
         q_fingerprint = _query_fingerprint(request)
-        cache_key = _cache_key("task_list", scope_id, lang, q_fingerprint)
+        suffix = f"adm:{q_fingerprint}" if _is_org_gold_admin(request) else q_fingerprint
+        cache_key = _cache_key("task_list", scope_id, lang, suffix)
 
         cached = cache.get(cache_key)
         if cached is not None:
@@ -195,11 +208,12 @@ class TaskViewSet(viewsets.ModelViewSet):
         return response
 
     def retrieve(self, request: Request, *args: Any, **kwargs: Any) -> Response:
-        """Retrieve a single task with language-scoped Redis caching."""
+        """Retrieve a single task with language-scoped, gold-blindness-safe Redis caching."""
         scope_id = _scope_id_for_request(request)
         lang = getattr(request, "language", "en")
         task_id = str(kwargs.get("pk", ""))
-        cache_key = _cache_key("task_detail", scope_id, lang, task_id)
+        suffix = f"adm:{task_id}" if _is_org_gold_admin(request) else task_id
+        cache_key = _cache_key("task_detail", scope_id, lang, suffix)
 
         cached = cache.get(cache_key)
         if cached is not None:
@@ -250,6 +264,11 @@ class TaskViewSet(viewsets.ModelViewSet):
         now = timezone.now()
 
         with transaction.atomic():
+            inject_gold_first = (
+                should_inject_gold_task(organization, request.user)
+                if organization is not None
+                else False
+            )
             already_annotated = TaskAnnotation.objects.filter(
                 task=OuterRef("pk"),
                 annotator=request.user,
@@ -261,6 +280,16 @@ class TaskViewSet(viewsets.ModelViewSet):
                 default=Value(1),
                 output_field=IntegerField(),
             )
+            gold_rank = Case(
+                When(is_gold=True, then=Value(1 if inject_gold_first else 0)),
+                default=Value(0 if inject_gold_first else 1),
+                output_field=IntegerField(),
+            )
+            capacity_filter = (
+                Q(is_gold=True) | Q(is_gold=False, existing_ann_count__lt=F("required_annotations"))
+                if organization is not None
+                else Q(existing_ann_count__lt=F("required_annotations"))
+            )
             candidates = (
                 Task.objects.filter(
                     is_active=True,
@@ -270,11 +299,10 @@ class TaskViewSet(viewsets.ModelViewSet):
                     existing_ann_count=Count("annotations", distinct=True),
                     has_my_annotation=Exists(already_annotated),
                     priority_rank=priority_rank,
+                    gold_rank=gold_rank,
                 )
-                .filter(
-                    has_my_annotation=False,
-                    existing_ann_count__lt=F("required_annotations"),
-                )
+                .filter(has_my_annotation=False)
+                .filter(capacity_filter)
                 .filter(
                     Q(claimed_until__isnull=True)
                     | Q(claimed_until__lte=now)
@@ -290,9 +318,9 @@ class TaskViewSet(viewsets.ModelViewSet):
                 candidates = candidates.filter(priority=priority_filter)
 
             candidate_id_list = list(
-                candidates.order_by("-priority_rank", "created_at").values_list("id", flat=True)[
-                    :25
-                ]
+                candidates.order_by("-gold_rank", "-priority_rank", "created_at").values_list(
+                    "id", flat=True
+                )[:25]
             )
             if not candidate_id_list:
                 return Response(
@@ -307,8 +335,8 @@ class TaskViewSet(viewsets.ModelViewSet):
                     | Q(claimed_until__lte=now)
                     | Q(claimed_by=request.user)
                 )
-                .annotate(priority_rank=priority_rank)
-                .order_by("-priority_rank", "created_at")
+                .annotate(priority_rank=priority_rank, gold_rank=gold_rank)
+                .order_by("-gold_rank", "-priority_rank", "created_at")
             )
             if connection.features.has_select_for_update_skip_locked:
                 lock_qs = lock_qs.select_for_update(skip_locked=True)
@@ -375,10 +403,14 @@ class TaskViewSet(viewsets.ModelViewSet):
         serializer = TaskAnnotationSerializer(data=payload)
         serializer.is_valid(raise_exception=True)
 
+        gold_audit_meta: dict[str, Any] | None = None
         try:
             with transaction.atomic():
                 annotation = serializer.save(task=task, annotator=request.user)
-                consensus_summary = evaluate_task_consensus(task)
+                if task.is_gold:
+                    consensus_summary, gold_audit_meta = evaluate_gold_annotation(task, annotation)
+                else:
+                    consensus_summary = evaluate_task_consensus(task)
         except IntegrityError:
             return Response(
                 {"error": "You have already submitted an annotation for this task."},
@@ -399,6 +431,15 @@ class TaskViewSet(viewsets.ModelViewSet):
                 "consensus_reached": consensus_summary["consensus_reached"],
             },
         )
+        if gold_audit_meta is not None:
+            AuditLog.objects.create(
+                organization=organization,
+                user=request.user,
+                action="gold_task_evaluated",
+                resource_type="AnnotatorCalibration",
+                resource_id=str(request.user.id),
+                metadata=gold_audit_meta,
+            )
         return Response(
             {
                 "annotation": TaskAnnotationSerializer(annotation).data,
@@ -597,11 +638,19 @@ class TaskViewSet(viewsets.ModelViewSet):
             or "jsonl"
         ).lower()
 
-        qs = (
-            self.filter_queryset(self.get_queryset())
-            .prefetch_related("annotations__annotator")
-            .order_by("created_at")
+        include_gold_param = request.query_params.get("include_gold", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
         )
+        can_export_gold = include_gold_param and (
+            getattr(request, "organization", None) is None or _is_org_gold_admin(request)
+        )
+        export_base_qs = self.filter_queryset(self.get_queryset())
+        if not can_export_gold:
+            export_base_qs = export_base_qs.filter(is_gold=False)
+
+        qs = export_base_qs.prefetch_related("annotations__annotator").order_by("created_at")
 
         def _serialize_export_row(task_obj: Task) -> dict[str, Any]:
             translations_map = {

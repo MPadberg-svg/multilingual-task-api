@@ -1,4 +1,4 @@
-"""Inter-annotator agreement (IAA) & consensus engine for RLHF task annotations."""
+"""Inter-annotator agreement (IAA) & skill-weighted consensus engine for RLHF task annotations."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from collections import Counter
 from typing import Any
 
 from apps.core.outbox import enqueue_outbox_event
-from apps.tasks.models import Task, TaskAnnotation
+from apps.tasks.models import AnnotatorCalibration, Task, TaskAnnotation
 
 
 def _score_val(ann: TaskAnnotation, key: str) -> float | None:
@@ -16,7 +16,7 @@ def _score_val(ann: TaskAnnotation, key: str) -> float | None:
 
 
 def evaluate_task_consensus(task: Task) -> dict[str, Any]:
-    """Recompute inter-annotator agreement, consensus choice, and lifecycle status for ``task``."""
+    """Recompute empirical skill-weighted IAA, consensus choice, and lifecycle status for ``task``."""
     annotations = list(TaskAnnotation.objects.filter(task=task).order_by("created_at"))
     total = len(annotations)
     if total == 0:
@@ -27,20 +27,54 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
             "awaiting_adjudication": False,
             "consensus_choice": "",
             "consensus_score": None,
+            "skill_weighted": False,
             "mean_scores": {},
         }
 
+    weight_map: dict[Any, float] = {}
+    if task.organization_id:
+        annotator_ids = [a.annotator_id for a in annotations]
+        weight_map = {
+            uid: float(w)
+            for uid, w in AnnotatorCalibration.objects.filter(
+                organization_id=task.organization_id,
+                user_id__in=annotator_ids,
+                gold_evaluated_count__gt=0,
+            ).values_list("user_id", "skill_weight")
+        }
+
     counts = Counter(a.preference for a in annotations)
-    ranked = counts.most_common()
-    top_choice, top_count = ranked[0]
-    has_unique_leader = len(ranked) == 1 or ranked[0][1] > ranked[1][1]
-    agreement_ratio = round(top_count / total, 4)
+    unweighted_ranked = counts.most_common()
+    unweighted_ratio = round(unweighted_ranked[0][1] / total, 4)
+
+    weighted_totals: dict[str, float] = {}
+    annotator_weights: list[tuple[TaskAnnotation, float]] = []
+    for ann in annotations:
+        w = float(weight_map.get(ann.annotator_id, 1.0))
+        annotator_weights.append((ann, w))
+        weighted_totals[ann.preference] = weighted_totals.get(ann.preference, 0.0) + w
+
+    total_weight = sum(weighted_totals.values())
+    ranked_weighted = sorted(
+        weighted_totals.items(),
+        key=lambda kv: (kv[1], counts[kv[0]]),
+        reverse=True,
+    )
+    top_choice, top_weight = ranked_weighted[0]
+    has_unique_leader = (
+        len(ranked_weighted) == 1 or (ranked_weighted[0][1] - ranked_weighted[1][1]) > 1e-6
+    )
+    agreement_ratio = round(top_weight / total_weight, 4) if total_weight > 0 else unweighted_ratio
 
     mean_scores: dict[str, float] = {}
     for metric in ("overall", "helpfulness", "harmlessness", "honesty"):
-        vals = [v for a in annotations if (v := _score_val(a, metric)) is not None]
-        if vals:
-            mean_scores[metric] = round(sum(vals) / len(vals), 2)
+        pairs = [
+            (v, w) for ann, w in annotator_weights if (v := _score_val(ann, metric)) is not None
+        ]
+        if pairs:
+            denom = sum(w for _, w in pairs)
+            if denom > 0:
+                mean_scores[metric] = round(sum(v * w for v, w in pairs) / denom, 2)
 
     consensus_reached = False
     awaiting_adjudication = False
@@ -81,6 +115,7 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
             "consensus_choice": task.consensus_choice,
             "consensus_score": task.consensus_score,
             "annotation_count": total,
+            "skill_weighted": bool(weight_map),
             "mean_scores": mean_scores,
         }
         enqueue_outbox_event(
@@ -101,6 +136,9 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
         "awaiting_adjudication": awaiting_adjudication,
         "consensus_choice": task.consensus_choice,
         "consensus_score": task.consensus_score,
+        "unweighted_agreement_score": unweighted_ratio,
+        "skill_weighted": bool(weight_map),
         "choice_distribution": dict(counts),
+        "weighted_distribution": {k: round(v, 4) for k, v in weighted_totals.items()},
         "mean_scores": mean_scores,
     }

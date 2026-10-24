@@ -36,6 +36,13 @@ class Task(TranslatableModel):  # type: ignore[misc]
         ("needs_review", "Needs Review"),
     ]
 
+    GOLD_CHOICE_CHOICES = [
+        ("", "Not Applicable"),
+        ("response_a", "Response A"),
+        ("response_b", "Response B"),
+        ("tie", "Tie"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -72,6 +79,13 @@ class Task(TranslatableModel):  # type: ignore[misc]
     consensus_choice = models.CharField(
         max_length=20,
         choices=CONSENSUS_CHOICES,
+        blank=True,
+        default="",
+    )
+    is_gold = models.BooleanField(default=False, db_index=True)
+    gold_choice = models.CharField(
+        max_length=20,
+        choices=GOLD_CHOICE_CHOICES,
         blank=True,
         default="",
     )
@@ -150,3 +164,47 @@ class TaskAnnotation(models.Model):
 
     def __str__(self) -> str:
         return f"Annotation({self.task_id}, {self.annotator_id}, {self.preference})"
+
+
+class AnnotatorCalibration(models.Model):
+    """Per-organization empirical accuracy and Bayesian skill weight for an annotator."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        "core.Organization",
+        on_delete=models.CASCADE,
+        related_name="annotator_calibrations",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="calibration_profiles",
+    )
+    gold_evaluated_count = models.PositiveIntegerField(default=0)
+    gold_correct_count = models.PositiveIntegerField(default=0)
+    accuracy_rate = models.FloatField(default=1.0)
+    skill_weight = models.FloatField(default=1.0)
+    last_calibrated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-skill_weight", "-gold_evaluated_count"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "user"],
+                name="tasks_anncal_uniq_org_user",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "-skill_weight"],
+                name="tasks_anncal_org_weight_idx",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"AnnotatorCalibration(org={self.organization_id}, user={self.user_id}, "
+            f"weight={self.skill_weight})"
+        )

@@ -181,6 +181,9 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "ip_address",
             "user_agent",
             "metadata",
+            "chain_seq",
+            "prev_hash",
+            "entry_hash",
             "created_at",
         ]
         read_only_fields = fields
