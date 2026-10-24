@@ -18,6 +18,7 @@ from django.db.models import (
     Count,
     Exists,
     F,
+    FloatField,
     IntegerField,
     OuterRef,
     Q,
@@ -25,6 +26,7 @@ from django.db.models import (
     Value,
     When,
 )
+from django.db.models.functions import Coalesce
 from django.http import StreamingHttpResponse
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
@@ -52,6 +54,7 @@ from apps.tasks.serializers import (
     TaskAnnotationSerializer,
     TaskClaimRequestSerializer,
     TaskSerializer,
+    TaskUncertaintyTriageSerializer,
 )
 
 logger = logging.getLogger(__name__)
@@ -299,6 +302,11 @@ class TaskViewSet(viewsets.ModelViewSet):
                 if trusted_domains
                 else Value(0, output_field=IntegerField())
             )
+            uncertainty_rank = Coalesce(
+                F("uncertainty_score"),
+                Value(0.0),
+                output_field=FloatField(),
+            )
             capacity_filter = (
                 Q(is_gold=True) | Q(is_gold=False, existing_ann_count__lt=F("required_annotations"))
                 if organization is not None
@@ -315,6 +323,7 @@ class TaskViewSet(viewsets.ModelViewSet):
                     priority_rank=priority_rank,
                     gold_rank=gold_rank,
                     specialist_rank=specialist_rank,
+                    uncertainty_rank=uncertainty_rank,
                 )
                 .filter(has_my_annotation=False)
                 .filter(capacity_filter)
@@ -343,6 +352,7 @@ class TaskViewSet(viewsets.ModelViewSet):
                     "-gold_rank",
                     "-specialist_rank",
                     "-priority_rank",
+                    "-uncertainty_rank",
                     "created_at",
                 ).values_list("id", flat=True)[:25]
             )
@@ -363,8 +373,15 @@ class TaskViewSet(viewsets.ModelViewSet):
                     priority_rank=priority_rank,
                     gold_rank=gold_rank,
                     specialist_rank=specialist_rank,
+                    uncertainty_rank=uncertainty_rank,
                 )
-                .order_by("-gold_rank", "-specialist_rank", "-priority_rank", "created_at")
+                .order_by(
+                    "-gold_rank",
+                    "-specialist_rank",
+                    "-priority_rank",
+                    "-uncertainty_rank",
+                    "created_at",
+                )
             )
             if connection.features.has_select_for_update_skip_locked:
                 lock_qs = lock_qs.select_for_update(skip_locked=True)
@@ -532,6 +549,148 @@ class TaskViewSet(viewsets.ModelViewSet):
 
         refreshed = self.get_queryset().get(pk=task.pk)
         return Response(self.get_serializer(refreshed).data, status=status.HTTP_200_OK)
+
+    @extend_schema(
+        operation_id="v1_tasks_triage_uncertainty_create",
+        request=TaskUncertaintyTriageSerializer,
+        responses={
+            200: {"type": "object"},
+            400: {"type": "object"},
+            429: {"type": "object"},
+            502: {"type": "object"},
+            503: {"type": "object"},
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="triage-uncertainty")
+    def triage_uncertainty(self, request: Request, pk: str | None = None) -> Response:
+        """Run active-learning LLM judge triage and promote high-entropy pairs to expert tier."""
+        from apps.ai_assist.circuit_breaker import CircuitOpenError, openai_circuit_breaker
+        from apps.ai_assist.services import _ai_service
+        from apps.core.finops import AIBudgetExceededError
+
+        task = self.get_object()
+        serializer = TaskUncertaintyTriageSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        prompt_text = str(serializer.validated_data.get("prompt") or "").strip()
+        if not prompt_text:
+            prompt_text = str(
+                task.safe_translation_getter("description", any_language=True)
+                or task.safe_translation_getter("title", any_language=True)
+                or ""
+            ).strip()
+        if not prompt_text:
+            return Response(
+                {"error": "Task has no prompt/description text to evaluate."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        lang = str(
+            serializer.validated_data.get("lang") or getattr(request, "language", "en") or "en"
+        )[:10]
+        organization = getattr(request, "organization", None) or task.organization
+        org_id_str = str(organization.id) if organization is not None else None
+
+        try:
+            call_kwargs = {"organization_id": org_id_str} if org_id_str else {}
+            triage_result = _ai_service.judge_rlhf_pair(
+                user_id=str(request.user.id),
+                lang=lang,
+                prompt_text=prompt_text,
+                response_a=str(serializer.validated_data["response_a"]),
+                response_b=str(serializer.validated_data["response_b"]),
+                domain=str(task.domain or "general"),
+                **call_kwargs,
+            )
+        except ValueError as exc:
+            return Response({"error": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except AIBudgetExceededError as exc:
+            return Response(
+                {
+                    "error": str(exc),
+                    "code": "ai_budget_exceeded",
+                    "budget": exc.budget_snapshot,
+                },
+                status=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+        except CircuitOpenError:
+            retry_after = str(openai_circuit_breaker.recovery_timeout)
+            return Response(
+                {
+                    "error": "AI service temporarily unavailable",
+                    "retry_after": openai_circuit_breaker.recovery_timeout,
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                headers={"Retry-After": retry_after},
+            )
+        except Exception as exc:
+            logger.error("Active-learning uncertainty triage failed: %s", exc)
+            return Response(
+                {"error": "AI service temporarily unavailable"},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        uncertainty_score = float(triage_result["uncertainty_score"])
+        should_escalate = bool(triage_result["should_escalate"]) and not task.is_gold
+        escalated_now = False
+
+        with transaction.atomic():
+            update_fields = ["uncertainty_score", "updated_at"]
+            task.uncertainty_score = uncertainty_score
+            if should_escalate:
+                if task.difficulty != "expert":
+                    task.difficulty = "expert"
+                    update_fields.append("difficulty")
+                if task.priority in ("low", "medium"):
+                    task.priority = "high"
+                    update_fields.append("priority")
+                if not task.auto_escalated:
+                    task.auto_escalated = True
+                    update_fields.append("auto_escalated")
+                escalated_now = True
+
+            task.save(update_fields=update_fields)
+            if escalated_now and task.organization_id:
+                enqueue_outbox_event(
+                    organization_id=str(task.organization_id),
+                    event_type="task.uncertainty_escalated",
+                    payload={
+                        "task_id": str(task.id),
+                        "reason": "llm_judge_high_entropy",
+                        "domain": task.domain,
+                        "difficulty": task.difficulty,
+                        "priority": task.priority,
+                        "uncertainty_score": uncertainty_score,
+                        "shannon_entropy": triage_result["shannon_entropy"],
+                        "judge_preference": triage_result["preference"],
+                    },
+                )
+
+        self._invalidate_for_task(task)
+        AuditLog.objects.create(
+            organization=organization,
+            user=request.user,
+            action="task_uncertainty_triaged",
+            resource_type="Task",
+            resource_id=str(task.id),
+            metadata={
+                "uncertainty_score": uncertainty_score,
+                "shannon_entropy": triage_result["shannon_entropy"],
+                "escalated": escalated_now,
+                "difficulty": task.difficulty,
+            },
+        )
+        refreshed = self.get_queryset().get(pk=task.pk)
+        return Response(
+            {
+                "task": self.get_serializer(refreshed).data,
+                "triage": {
+                    **triage_result,
+                    "escalated_to_expert": escalated_now,
+                },
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=False, methods=["post"], url_path="bulk")
     def bulk(self, request: Request) -> Response:

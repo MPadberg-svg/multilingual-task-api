@@ -29,6 +29,8 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.core.audit_chain import (
     create_organization_audit_checkpoint,
+    get_active_transparency_public_key_metadata,
+    verify_checkpoint_offline_bundle,
     verify_organization_audit_chain,
 )
 from apps.core.db_router import use_read_replica
@@ -494,6 +496,68 @@ class OrganizationAuditCheckpointListCreateView(APIView):
             )
         http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
         return Response(AuditChainCheckpointSerializer(checkpoint).data, status=http_status)
+
+
+class OrganizationAuditPublicKeyView(APIView):
+    """Expose active Ed25519 / AWS KMS SubjectPublicKeyInfo PEM & JWK for external auditors."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="v1_organizations_audit_logs_public_key_retrieve",
+        responses={200: {"type": "object"}},
+    )
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        key_meta = get_active_transparency_public_key_metadata()
+        return Response(
+            {
+                "organization_id": str(org.id),
+                **key_meta,
+            }
+        )
+
+
+class OrganizationAuditCheckpointBundleView(APIView):
+    """Replica-routed self-contained offline verification bundle for a WORM checkpoint."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="v1_organizations_audit_logs_checkpoints_bundle_retrieve",
+        responses={200: {"type": "object"}},
+    )
+    def get(self, request: Request, org_id: str, checkpoint_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        with use_read_replica() as query_target:
+            checkpoint = get_object_or_404(
+                AuditChainCheckpoint,
+                id=checkpoint_id,
+                organization=org,
+            )
+            ckpt_data = dict(AuditChainCheckpointSerializer(checkpoint).data)
+
+        key_meta = get_active_transparency_public_key_metadata()
+        offline_verification: dict[str, Any] | None = None
+        if key_meta["asymmetric_signing_enabled"] and ckpt_data.get("asymmetric_signature"):
+            offline_verification = verify_checkpoint_offline_bundle(
+                ckpt_data,
+                str(key_meta["public_key_pem"]),
+            )
+
+        return Response(
+            {
+                "bundle_version": "1.0",
+                "organization_id": str(org.id),
+                "checkpoint": ckpt_data,
+                "public_key_pem": key_meta["public_key_pem"],
+                "public_key_fingerprint": key_meta["public_key_fingerprint"],
+                "jwk": key_meta["jwk"],
+                "offline_verification": offline_verification,
+                "query_target": query_target,
+            },
+            headers={"X-Query-Target": query_target},
+        )
 
 
 class OrganizationAnnotatorCalibrationView(APIView):

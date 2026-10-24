@@ -54,6 +54,15 @@ class TaskFilter(filters.FilterSet):
         choices=Task._meta.get_field("difficulty").choices,
         help_text="Filter by task difficulty tier.",
     )
+    min_uncertainty = filters.NumberFilter(
+        field_name="uncertainty_score",
+        lookup_expr="gte",
+        help_text="Filter tasks with active-learning uncertainty score >= threshold.",
+    )
+    auto_escalated = filters.BooleanFilter(
+        field_name="auto_escalated",
+        help_text="Filter tasks promoted via active-learning uncertainty escalation.",
+    )
     is_active = filters.BooleanFilter(
         help_text="Filter by active (non-deleted) state.",
     )
@@ -75,6 +84,8 @@ class TaskFilter(filters.FilterSet):
             "priority",
             "domain",
             "difficulty",
+            "min_uncertainty",
+            "auto_escalated",
             "is_active",
             "created_after",
             "created_before",

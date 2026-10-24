@@ -17,6 +17,7 @@ from typing import Final
 PROMPT_VERSION_TRANSLATION: Final[str] = "v1.3.0"
 PROMPT_VERSION_QUALITY: Final[str] = "v2.1.0"
 PROMPT_VERSION_TEST: Final[str] = "v1.1.0"
+PROMPT_VERSION_JUDGE: Final[str] = "v1.0.0"
 
 # =============================================================================
 # Hardened System Guardrail Prefix
@@ -75,6 +76,25 @@ TEST_CASE_GENERATION_PROMPT: Final[str] = (
     "<user_input>\n{user_input}\n</user_input>"
 )
 
+# =============================================================================
+# Pairwise RLHF Judge & Active-Learning Uncertainty Prompt
+# =============================================================================
+RLHF_JUDGE_PROMPT: Final[str] = (
+    "You are an impartial senior RLHF adjudicator evaluating two candidate assistant "
+    "responses inside <user_input> for domain '{domain}'. Estimate calibrated preference "
+    "probabilities summing to 1.0 across response_a, response_b, and tie so borderline or "
+    "ambiguous pairs receive high-entropy probabilities for human specialist escalation. "
+    "Return ONLY valid JSON: "
+    '{"preference":"response_a","choice_probabilities":'
+    '{"response_a":0.5,"response_b":0.4,"tie":0.1},"rationale":"..."}. '
+    "Provide rationale in language '{lang}'.\n\n"
+    "<user_input>\n"
+    "PROMPT:\n{user_input}\n\n"
+    "RESPONSE_A:\n{response_a}\n\n"
+    "RESPONSE_B:\n{response_b}\n"
+    "</user_input>"
+)
+
 
 def _escape_delimiters(text: str) -> str:
     """Neutralize closing/opening ``<user_input>`` tags inside untrusted text."""
@@ -92,6 +112,7 @@ class PromptTemplateManager:
             "task_translation": (TASK_TRANSLATION_PROMPT, PROMPT_VERSION_TRANSLATION),
             "prompt_evaluation": (QUALITY_EVALUATION_PROMPT, PROMPT_VERSION_QUALITY),
             "rlhf_generation": (TEST_CASE_GENERATION_PROMPT, PROMPT_VERSION_TEST),
+            "rlhf_judge": (RLHF_JUDGE_PROMPT, PROMPT_VERSION_JUDGE),
         }
 
     def render(self, template_name: str, **kwargs: str) -> str:

@@ -257,3 +257,22 @@ def anchor_audit_chain_checkpoints(batch_size: int = 100) -> dict[str, int]:
     from apps.core.audit_chain import anchor_pending_audit_checkpoints
 
     return anchor_pending_audit_checkpoints(batch_size=batch_size)
+
+
+@shared_task
+def emit_backlog_autoscaling_telemetry() -> dict[str, Any]:
+    """Emit structured CloudWatch metric-filter backlog telemetry for Celery autoscaling."""
+    import json
+
+    from apps.core.views import collect_async_backlog_telemetry
+
+    snapshot = collect_async_backlog_telemetry()
+    structured_event = {
+        "event": "AsyncBacklogTelemetry",
+        "AsyncBacklogDepth": int(snapshot["async_backlog_total"]),
+        "CeleryQueueDepth": int(snapshot["celery_queue_depth_total"]),
+        "OutboxPendingDepth": int(snapshot["outbox_pending"]),
+        "OutboxDeadLetterDepth": int(snapshot["outbox_dead_letter"]),
+    }
+    logger.info(json.dumps(structured_event, sort_keys=True, separators=(",", ":")))
+    return structured_event

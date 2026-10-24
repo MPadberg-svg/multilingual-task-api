@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.10.0] — 2026-10-24
+
+### Added
+- **Asymmetric Ed25519 & AWS KMS Transparency Signing + Offline Audit Verifier Bundles (`apps/core/audit_chain.py`, `apps/core/models.py`, `apps/core/tenant_views.py`, `config/urls.py`)**:
+  - Extended `AuditChainCheckpoint` (`signature_algorithm`, `public_key_fingerprint`, `asymmetric_signature`) with local `Ed25519` (`AUDIT_ANCHOR_ED25519_PRIVATE_KEY_PEM`) and zero-dependency AWS Signature Version 4 KMS `TrentService.Sign` / `TrentService.GetPublicKey` (`ECC_NIST_P256` `ECDSA_SHA_256`) public-key signing alongside domain-separated `HMAC-SHA256` defense-in-depth.
+  - Added `GET /api/v1/organizations/{org_id}/audit-logs/public-key/` (SubjectPublicKeyInfo PEM + RFC 7517/8037 JWK discovery), replica-routed `GET /api/v1/organizations/{org_id}/audit-logs/checkpoints/{checkpoint_id}/bundle/`, and pure zero-secret `verify_checkpoint_offline_bundle()` so external SOC 2 / ISO 27001 auditors can verify WORM S3 archives offline with a public key alone.
+- **Active-Learning LLM Judge Pairwise Uncertainty Routing & Automatic Expert Escalation (`apps/tasks/uncertainty.py`, `apps/ai_assist/`, `apps/tasks/consensus.py`, `apps/tasks/views.py`)**:
+  - Added `POST /api/v1/ai/judge-pair/` (`AIService.judge_rlhf_pair` + `RLHFJudgeEvaluationSchema`) and `POST /api/v1/tasks/{id}/triage-uncertainty/` computing hybrid Shannon entropy + least-margin uncertainty (`uncertainty_score`) and automatically promoting borderline prompts (`uncertainty_score >= ACTIVE_LEARNING_ENTROPY_THRESHOLD`, default `0.78`) to `difficulty="expert"`, `priority="high"`, and `auto_escalated=True` with `task.uncertainty_escalated` Outbox notifications.
+  - Upgraded `POST /api/v1/tasks/claim/` with `-uncertainty_rank` active-learning acquisition ordering, added `?min_uncertainty=...&auto_escalated=...` filters on `/api/v1/tasks/`, and upgraded `evaluate_task_consensus` to compute empirical annotation uncertainty and auto-escalate deadlocked split-vote tasks to `difficulty="expert"`.
+- **Proactive Celery Queue-Depth Telemetry & AWS KMS / Custom-Metric Autoscaling IaC (`apps/core/views.py`, `apps/tasks/tasks.py`, `terraform/`)**:
+  - Exposed live single-RTT Redis pipeline queue gauges (`mltask_celery_queue_depth{queue=...}`, `mltask_celery_queue_depth_total`, `mltask_async_backlog_total`) on `/api/v1/metrics/` plus 60-second Celery Beat `emit_backlog_autoscaling_telemetry` (`AsyncBacklogTelemetry`).
+  - Provisioned `aws_kms_key.audit_anchor` (`ECC_NIST_P256` `SIGN_VERIFY` + least-privilege `ecs_task` KMS policy), `aws_cloudwatch_log_metric_filter.async_backlog_depth`, `aws_appautoscaling_policy.celery_backlog` (`customized_metric_specification` on `AsyncBacklogDepth`), and `aws_cloudwatch_metric_alarm.celery_backlog_high` in Terraform.
+
+---
+
 ## [1.9.0] — 2026-10-24
 
 ### Added

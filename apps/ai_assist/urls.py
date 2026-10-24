@@ -8,4 +8,5 @@ urlpatterns = [
     path("suggest-task/", views.suggest_task, name="suggest-task"),
     path("evaluate-quality/", views.evaluate_quality, name="evaluate-quality"),
     path("generate-test-cases/", views.generate_test_cases, name="generate-test-cases"),
+    path("judge-pair/", views.judge_pair, name="judge-pair"),
 ]

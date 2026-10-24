@@ -33,9 +33,11 @@ from apps.core.tenant_views import (
     OrganizationAnnotatorCalibrationView,
     OrganizationAPIKeyDetailView,
     OrganizationAPIKeyListCreateView,
+    OrganizationAuditCheckpointBundleView,
     OrganizationAuditCheckpointListCreateView,
     OrganizationAuditLogListView,
     OrganizationAuditLogVerifyView,
+    OrganizationAuditPublicKeyView,
     OrganizationDetailView,
     OrganizationFinOpsView,
     OrganizationListCreateView,
@@ -114,9 +116,19 @@ urlpatterns = [
         name="organization-audit-logs-verify",
     ),
     path(
+        "api/v1/organizations/<uuid:org_id>/audit-logs/public-key/",
+        OrganizationAuditPublicKeyView.as_view(),
+        name="organization-audit-logs-public-key",
+    ),
+    path(
         "api/v1/organizations/<uuid:org_id>/audit-logs/checkpoints/",
         OrganizationAuditCheckpointListCreateView.as_view(),
         name="organization-audit-logs-checkpoints",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/audit-logs/checkpoints/<uuid:checkpoint_id>/bundle/",
+        OrganizationAuditCheckpointBundleView.as_view(),
+        name="organization-audit-logs-checkpoint-bundle",
     ),
     path(
         "api/v1/organizations/<uuid:org_id>/annotators/calibration/",

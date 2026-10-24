@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -79,3 +79,43 @@ class RLHFTestCaseSchema(BaseModel):
                 },
             }
         return data
+
+
+class RLHFJudgeProbabilitiesSchema(BaseModel):
+    """Probability distribution returned by the active-learning RLHF pairwise LLM judge."""
+
+    response_a: float = Field(default=0.34, ge=0.0, le=1.0)
+    response_b: float = Field(default=0.33, ge=0.0, le=1.0)
+    tie: float = Field(default=0.33, ge=0.0, le=1.0)
+
+
+class RLHFJudgeEvaluationSchema(BaseModel):
+    """Structured pairwise preference & calibrated probability distribution from LLM judge."""
+
+    preference: Literal["response_a", "response_b", "tie"]
+    choice_probabilities: RLHFJudgeProbabilitiesSchema = Field(
+        default_factory=RLHFJudgeProbabilitiesSchema
+    )
+    rationale: str = Field(default="", max_length=4000)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_aliases(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        raw_pref = str(normalized.get("preference") or "tie").strip().lower()
+        alias_map = {
+            "a": "response_a",
+            "b": "response_b",
+            "response_a": "response_a",
+            "response_b": "response_b",
+            "tie": "tie",
+        }
+        if raw_pref in alias_map:
+            normalized["preference"] = alias_map[raw_pref]
+        if "choice_probabilities" not in normalized and isinstance(
+            normalized.get("probabilities"), dict
+        ):
+            normalized["choice_probabilities"] = normalized.pop("probabilities")
+        return normalized

@@ -264,3 +264,74 @@ def generate_test_cases(request: Request) -> Response:
             {"error": "AI service temporarily unavailable"},
             status=502,
         )
+
+
+@extend_schema(
+    operation_id="v1_ai_judge_pair_create",
+    request={
+        "application/json": {
+            "type": "object",
+            "properties": {
+                "prompt": {"type": "string"},
+                "response_a": {"type": "string"},
+                "response_b": {"type": "string"},
+                "domain": {"type": "string", "default": "general"},
+                "lang": {"type": "string", "default": "en"},
+            },
+            "required": ["prompt", "response_a", "response_b"],
+        }
+    },
+    responses={
+        200: {"type": "object"},
+        400: {"type": "object"},
+        429: {"type": "object"},
+        502: {"type": "object"},
+        503: {"type": "object"},
+    },
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([AIAssistRateThrottle, BurstRateThrottle])
+def judge_pair(request: Request) -> Response:
+    """Score an RLHF prompt/response pair with LLM judge probabilities & Shannon/margin entropy."""
+    try:
+        prompt_text = _extract_string_field(request.data, "prompt", "prompt_text")
+        response_a = _extract_string_field(request.data, "response_a")
+        response_b = _extract_string_field(request.data, "response_b")
+        domain = _extract_string_field(request.data, "domain") or "general"
+        lang = _resolve_lang_param(request)
+    except ValueError as exc:
+        return Response({"error": str(exc)}, status=400)
+
+    if not prompt_text or not response_a or not response_b:
+        return Response(
+            {"error": "Fields 'prompt', 'response_a', and 'response_b' are required"},
+            status=400,
+        )
+
+    try:
+        org_id = _resolve_org_id(request)
+        call_kwargs = {"organization_id": org_id} if org_id else {}
+        result = _ai_service.judge_rlhf_pair(
+            user_id=str(request.user.id),
+            lang=lang,
+            prompt_text=prompt_text,
+            response_a=response_a,
+            response_b=response_b,
+            domain=domain,
+            **call_kwargs,
+        )
+        return Response(result)
+    except ValueError as exc:
+        logger.warning("Input validation rejected on judge_pair: %s", exc)
+        return Response({"error": str(exc)}, status=400)
+    except AIBudgetExceededError as exc:
+        return _budget_exceeded_response(exc)
+    except CircuitOpenError:
+        return _circuit_open_response()
+    except Exception as exc:
+        logger.error("RLHF judge evaluation failed: %s", exc)
+        return Response(
+            {"error": "AI service temporarily unavailable"},
+            status=502,
+        )
