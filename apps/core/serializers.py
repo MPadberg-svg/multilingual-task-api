@@ -11,6 +11,7 @@ from rest_framework import serializers
 from apps.core.models import (
     VALID_API_KEY_SCOPES,
     VALID_WEBHOOK_EVENTS,
+    AuditChainCheckpoint,
     AuditLog,
     Organization,
     OrganizationAPIKey,
@@ -184,6 +185,33 @@ class AuditLogSerializer(serializers.ModelSerializer):
             "chain_seq",
             "prev_hash",
             "entry_hash",
+            "created_at",
+        ]
+        read_only_fields = fields
+
+
+class AuditChainCheckpointSerializer(serializers.ModelSerializer):
+    """Read-only representation of HMAC-signed & S3 WORM notarized audit checkpoints."""
+
+    class Meta:
+        model = AuditChainCheckpoint
+        fields = [
+            "id",
+            "organization",
+            "checkpoint_seq",
+            "covered_up_to_seq",
+            "verified_entries",
+            "head_hash",
+            "manifest_digest",
+            "prev_checkpoint_hash",
+            "checkpoint_hash",
+            "signature",
+            "anchor_status",
+            "worm_uri",
+            "worm_etag",
+            "worm_version_id",
+            "retention_until",
+            "anchor_error",
             "created_at",
         ]
         read_only_fields = fields

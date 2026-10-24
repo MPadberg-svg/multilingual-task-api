@@ -77,6 +77,8 @@ class TaskSerializer(serializers.ModelSerializer):
             "status",
             "status_display",
             "priority",
+            "domain",
+            "difficulty",
             "required_annotations",
             "claimed_by",
             "claimed_until",
@@ -323,6 +325,8 @@ class TaskSerializer(serializers.ModelSerializer):
             "status": instance.status,
             "status_display": instance.get_status_display(),
             "priority": instance.priority,
+            "domain": instance.domain,
+            "difficulty": instance.difficulty,
             "required_annotations": instance.required_annotations,
             "claimed_by": str(instance.claimed_by_id) if instance.claimed_by_id else None,
             "claimed_until": (
@@ -531,13 +535,25 @@ class TaskAdjudicateSerializer(serializers.Serializer):
 
 
 class TaskClaimRequestSerializer(serializers.Serializer):
-    """Optional lease configuration for ``POST /api/v1/tasks/claim/``."""
+    """Optional lease & specialist routing configuration for ``POST /api/v1/tasks/claim/``."""
 
     lease_seconds = serializers.IntegerField(
         required=False, default=900, min_value=60, max_value=7200
     )
     priority = serializers.ChoiceField(
         choices=["low", "medium", "high", "critical"],
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    domain = serializers.ChoiceField(
+        choices=[code for code, _ in Task.DOMAIN_CHOICES],
+        required=False,
+        allow_null=True,
+        default=None,
+    )
+    difficulty = serializers.ChoiceField(
+        choices=[code for code, _ in Task.DIFFICULTY_CHOICES],
         required=False,
         allow_null=True,
         default=None,

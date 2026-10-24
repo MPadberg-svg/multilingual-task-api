@@ -7,6 +7,21 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 
 ---
 
+## [1.9.0] — 2026-10-24
+
+### Added
+- **External Anchoring & S3 Object-Lock WORM Audit Checkpointing (`apps/core/audit_chain.py`, `apps/core/models.py`, `apps/core/tenant_views.py`, `apps/tasks/tasks.py`, `apps/tasks/migrations/0011_postgres_rls_v190_checkpoints.py`)**:
+  - Added `AuditChainCheckpoint` (`FORCE ROW LEVEL SECURITY` + ORM immutability guards) notarizing periodic snapshots of each tenant's `AuditLog` hash chain with domain-separated `HMAC-SHA256` signatures (`AUDIT_ANCHOR_SIGNING_KEY`), `audit.checkpoint_anchored` Outbox events, and zero-dependency AWS Signature Version 4 HTTPS `PUT` archival to Amazon S3 Object Lock (`COMPLIANCE` mode, `Content-MD5` + `x-amz-object-lock-retain-until-date`).
+  - Added `GET/POST /api/v1/organizations/{org_id}/audit-logs/checkpoints/`, hourly Celery Beat sweep `anchor_audit_chain_checkpoints`, and upgraded `/audit-logs/verify/` to cross-check checkpoint signatures and historical prefix hashes (`checkpoint_anchor_divergence`, `checkpoint_signature_mismatch`)—detecting even privileged DB full-chain rewrite or tail-truncation attacks.
+- **Adaptive Difficulty & Multi-Dimensional Domain/Language Skill Vectors (`apps/tasks/models.py`, `apps/tasks/calibration.py`, `apps/tasks/consensus.py`, `apps/tasks/filters.py`, `apps/tasks/views.py`)**:
+  - Added `Task.domain` (`general`, `code`, `math`, `medical`, `legal`, `creative`, `safety`) and `Task.difficulty` (`standard`, `hard`, `expert`) plus per-language and per-domain Bayesian calibration vectors (`language_skill_vectors`, `domain_skill_vectors`) on `AnnotatorCalibration`.
+  - Upgraded `POST /api/v1/tasks/claim/` with automatic `specialist_rank` routing for calibrated domain specialists and probation gating (`skill_weight < 0.70`) on `difficulty="expert"` production tasks, blended specialist + baseline weights in `evaluate_task_consensus`, and added `?domain=...&language=...` specialist filtering on `/annotators/calibration/`.
+- **Terraform S3 WORM Bucket, Multi-Metric Autoscaling & CloudWatch-Gated Canary Rollouts (`terraform/main.tf`, `terraform/variables.tf`, `terraform/outputs.tf`)**:
+  - Provisioned AES-256 encrypted, public-blocked `aws_s3_bucket.audit_worm` with `COMPLIANCE` Object Lock (`enable_audit_worm_bucket`, `audit_worm_retention_days`) and least-privilege `ecs_task` IAM policy wired to `AUDIT_WORM_S3_BUCKET`.
+  - Added `ALBRequestCountPerTarget` autoscaling (`aws_appautoscaling_policy.alb_requests`), Celery worker autoscaling (`aws_appautoscaling_target.celery_worker` + `celery_cpu`), ECS `deployment_circuit_breaker` + CloudWatch `alarms` automatic canary rollback on `aws_ecs_service.api`, and `aws_cloudwatch_composite_alarm.canary_rollout_guard`.
+
+---
+
 ## [1.8.0] — 2026-10-24
 
 ### Added

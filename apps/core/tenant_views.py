@@ -27,11 +27,15 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from apps.core.audit_chain import verify_organization_audit_chain
+from apps.core.audit_chain import (
+    create_organization_audit_checkpoint,
+    verify_organization_audit_chain,
+)
 from apps.core.db_router import use_read_replica
 from apps.core.finops import get_org_finops_summary, invalidate_org_budget_cache
 from apps.core.middleware import RequestLoggingMiddleware
 from apps.core.models import (
+    AuditChainCheckpoint,
     AuditLog,
     Organization,
     OrganizationAPIKey,
@@ -44,6 +48,7 @@ from apps.core.models import (
 from apps.core.outbox import replay_dead_letter_outbox_event
 from apps.core.pagination import StandardResultsSetPagination
 from apps.core.serializers import (
+    AuditChainCheckpointSerializer,
     AuditLogSerializer,
     CurrentUserSerializer,
     LogoutSerializer,
@@ -427,6 +432,70 @@ class OrganizationAuditLogVerifyView(APIView):
         return Response(report, headers={"X-Query-Target": query_target})
 
 
+class OrganizationAuditCheckpointListCreateView(APIView):
+    """List WORM audit checkpoints (replica-routed) or mint an immediate notarized checkpoint."""
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = AuditChainCheckpointSerializer
+
+    @extend_schema(
+        operation_id="v1_organizations_audit_logs_checkpoints_list",
+        responses={200: AuditChainCheckpointSerializer(many=True)},
+    )
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        with use_read_replica() as query_target:
+            qs = AuditChainCheckpoint.objects.filter(organization=org).order_by("-checkpoint_seq")
+            paginator = StandardResultsSetPagination()
+            page = paginator.paginate_queryset(qs, request, view=self)
+            serializer = AuditChainCheckpointSerializer(page, many=True)
+            response = paginator.get_paginated_response(serializer.data)
+        response["X-Query-Target"] = query_target
+        return response
+
+    @extend_schema(
+        operation_id="v1_organizations_audit_logs_checkpoints_create",
+        request={"application/json": {"type": "object"}},
+        responses={
+            200: AuditChainCheckpointSerializer,
+            201: AuditChainCheckpointSerializer,
+            409: {"type": "object"},
+        },
+    )
+    def post(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        force = bool(request.data.get("force", False) if isinstance(request.data, dict) else False)
+        try:
+            checkpoint, created = create_organization_audit_checkpoint(org, force=force)
+        except DjangoValidationError as exc:
+            return Response(
+                {"error": exc.messages[0] if exc.messages else str(exc)},
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        if checkpoint is None:
+            return Response(
+                {"detail": "No audit entries exist yet to anchor."},
+                status=status.HTTP_200_OK,
+            )
+
+        if created:
+            _record_audit(
+                request,
+                action="audit_checkpoint_anchored",
+                resource_type="AuditChainCheckpoint",
+                resource_id=str(checkpoint.id),
+                organization=org,
+                metadata={
+                    "checkpoint_seq": checkpoint.checkpoint_seq,
+                    "covered_up_to_seq": checkpoint.covered_up_to_seq,
+                    "anchor_status": checkpoint.anchor_status,
+                },
+            )
+        http_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        return Response(AuditChainCheckpointSerializer(checkpoint).data, status=http_status)
+
+
 class OrganizationAnnotatorCalibrationView(APIView):
     """Replica-routed empirical gold-task accuracy & Bayesian skill-weight leaderboard."""
 
@@ -440,7 +509,13 @@ class OrganizationAnnotatorCalibrationView(APIView):
         from apps.tasks.calibration import get_organization_calibration_leaderboard
 
         org, _role = _require_org_admin(request.user, org_id)
-        payload, query_target = get_organization_calibration_leaderboard(org)
+        domain = request.query_params.get("domain", "").strip().lower() or None
+        language = request.query_params.get("language", "").strip().lower() or None
+        payload, query_target = get_organization_calibration_leaderboard(
+            org,
+            domain=domain,
+            language=language,
+        )
         return Response(payload, headers={"X-Query-Target": query_target})
 
 

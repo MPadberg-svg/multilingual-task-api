@@ -43,6 +43,22 @@ class Task(TranslatableModel):  # type: ignore[misc]
         ("tie", "Tie"),
     ]
 
+    DOMAIN_CHOICES = [
+        ("general", "General"),
+        ("code", "Code & Software Engineering"),
+        ("math", "Mathematics & Quantitative Reasoning"),
+        ("medical", "Biomedical & Clinical"),
+        ("legal", "Legal & Regulatory"),
+        ("creative", "Creative Writing"),
+        ("safety", "Safety & Red-Teaming"),
+    ]
+
+    DIFFICULTY_CHOICES = [
+        ("standard", "Standard"),
+        ("hard", "Hard"),
+        ("expert", "Expert"),
+    ]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -65,6 +81,18 @@ class Task(TranslatableModel):  # type: ignore[misc]
         max_length=20,
         choices=PRIORITY_CHOICES,
         default="medium",
+    )
+    domain = models.CharField(
+        max_length=24,
+        choices=DOMAIN_CHOICES,
+        default="general",
+        db_index=True,
+    )
+    difficulty = models.CharField(
+        max_length=16,
+        choices=DIFFICULTY_CHOICES,
+        default="standard",
+        db_index=True,
     )
     required_annotations = models.PositiveSmallIntegerField(default=3)
     claimed_by = models.ForeignKey(
@@ -184,6 +212,8 @@ class AnnotatorCalibration(models.Model):
     gold_correct_count = models.PositiveIntegerField(default=0)
     accuracy_rate = models.FloatField(default=1.0)
     skill_weight = models.FloatField(default=1.0)
+    language_skill_vectors = models.JSONField(default=dict, blank=True)
+    domain_skill_vectors = models.JSONField(default=dict, blank=True)
     last_calibrated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

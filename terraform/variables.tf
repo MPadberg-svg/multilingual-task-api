@@ -18,7 +18,7 @@ variable "environment" {
 variable "image_tag" {
   description = "Immutable container image tag (e.g. git SHA or release tag)"
   type        = string
-  default     = "v1.8.0"
+  default     = "v1.9.0"
 }
 
 variable "domain_name" {
@@ -167,6 +167,30 @@ variable "alert_sns_topic_arn" {
   description = "Optional SNS topic ARN receiving CloudWatch alarm notifications for Outbox DLQ, RDS lag/CPU, and ALB 5xx"
   type        = string
   default     = ""
+}
+
+variable "enable_audit_worm_bucket" {
+  description = "Provision an S3 Object Lock (COMPLIANCE mode) WORM bucket for notarized AuditChainCheckpoint archives"
+  type        = bool
+  default     = true
+}
+
+variable "audit_worm_retention_days" {
+  description = "Default COMPLIANCE Object Lock retention window in days for WORM audit checkpoints"
+  type        = number
+  default     = 365
+}
+
+variable "alb_requests_per_target" {
+  description = "Target ALB request count per ECS API task for TargetTrackingScaling"
+  type        = number
+  default     = 600
+}
+
+variable "celery_max_capacity" {
+  description = "Maximum auto-scaled ECS Fargate Celery worker count"
+  type        = number
+  default     = 6
 }
 
 variable "redis_node_type" {
