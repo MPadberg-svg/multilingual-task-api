@@ -635,8 +635,9 @@ class TaskViewSet(viewsets.ModelViewSet):
         escalated_now = False
 
         with transaction.atomic():
-            update_fields = ["uncertainty_score", "updated_at"]
+            update_fields = ["uncertainty_score", "judge_uncertainty_score", "updated_at"]
             task.uncertainty_score = uncertainty_score
+            task.judge_uncertainty_score = uncertainty_score
             if should_escalate:
                 if task.difficulty != "expert":
                     task.difficulty = "expert"
@@ -908,6 +909,286 @@ class TaskViewSet(viewsets.ModelViewSet):
         response["Content-Disposition"] = 'attachment; filename="rlhf-tasks-export.jsonl"'
         response["X-Query-Target"] = resolved_target
         return response
+
+    @extend_schema(
+        operation_id="v1_tasks_export_dpo_retrieve",
+        responses={200: {"type": "object"}},
+    )
+    @action(
+        detail=False,
+        methods=["get"],
+        url_path="export-dpo",
+        renderer_classes=[JSONRenderer, JSONLinesRenderer],
+    )
+    def export_dpo(self, request: Request) -> StreamingHttpResponse | Response:
+        """Stream quality-gated DPO preference pairs or emit a signed provenance manifest."""
+        from apps.tasks.dpo_export import (
+            build_dpo_export_record,
+            build_signed_dpo_manifest,
+            upload_dataset_snapshot_to_s3,
+        )
+        from apps.tasks.models import AnnotatorCalibration
+
+        fmt = (
+            (
+                request.query_params.get("export_format")
+                or request.query_params.get("format")
+                or "jsonl"
+            )
+            .strip()
+            .lower()
+        )
+        if fmt not in ("jsonl", "json", "manifest"):
+            return Response(
+                {"error": "Unsupported export_format. Choose 'jsonl', 'json', or 'manifest'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        split_filter = (request.query_params.get("split") or "all").strip().lower()
+        if split_filter not in ("all", "train", "eval"):
+            return Response(
+                {"error": "Invalid split filter. Choose 'all', 'train', or 'eval'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        schema_style = (request.query_params.get("schema") or "trl").strip().lower()
+        if schema_style not in ("trl", "chat"):
+            return Response(
+                {"error": "Invalid schema. Choose 'trl' or 'chat'."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            min_consensus = float(request.query_params.get("min_consensus_score", "0.50"))
+            eval_ratio = float(request.query_params.get("eval_ratio", "0.10"))
+        except ValueError:
+            return Response(
+                {"error": "min_consensus_score and eval_ratio must be numeric."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not (0.0 <= min_consensus <= 1.0) or not (0.0 <= eval_ratio <= 0.50):
+            return Response(
+                {
+                    "error": (
+                        "min_consensus_score must be in [0.0, 1.0] and eval_ratio in [0.0, 0.50]."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        split_seed = (request.query_params.get("split_seed") or "v1").strip()[:64] or "v1"
+        lang = str(request.query_params.get("lang") or getattr(request, "language", "en") or "en")[
+            :10
+        ].lower()
+        redact_pii = request.query_params.get("redact_pii", "true").strip().lower() not in (
+            "0",
+            "false",
+            "no",
+        )
+        include_ties = request.query_params.get("include_ties", "false").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        include_gold_param = request.query_params.get("include_gold", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        organization = getattr(request, "organization", None)
+        can_export_gold = include_gold_param and (
+            organization is None or _is_org_gold_admin(request)
+        )
+        archive_to_s3 = request.query_params.get("archive_to_s3", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        if archive_to_s3 and organization is not None and not _is_org_gold_admin(request):
+            return Response(
+                {"error": "Only organization admins or owners can archive exports to S3."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        base_qs = self.filter_queryset(self.get_queryset())
+        if not can_export_gold:
+            base_qs = base_qs.filter(is_gold=False)
+        allowed_choices = (
+            ["response_a", "response_b", "tie"] if include_ties else ["response_a", "response_b"]
+        )
+        qs = (
+            base_qs.filter(consensus_choice__in=allowed_choices)
+            .prefetch_related("annotations")
+            .order_by("created_at", "id")
+        )
+
+        AuditLog.objects.create(
+            organization=organization,
+            user=request.user,
+            action="exported",
+            resource_type="Task",
+            resource_id="dpo_dataset",
+            metadata={
+                "pipeline": "dpo",
+                "format": fmt,
+                "split": split_filter,
+                "schema": schema_style,
+                "redact_pii": redact_pii,
+            },
+        )
+
+        if fmt in ("json", "manifest") or archive_to_s3:
+            with use_read_replica() as query_target:
+                cal_map: dict[Any, AnnotatorCalibration] = {}
+                if organization is not None:
+                    cal_map = {
+                        c.user_id: c
+                        for c in AnnotatorCalibration.objects.filter(
+                            organization_id=organization.id,
+                            gold_evaluated_count__gt=0,
+                        )
+                    }
+                records: list[dict[str, Any]] = []
+                total_redactions = 0
+                for task_obj in qs:
+                    rec, red_count = build_dpo_export_record(
+                        task_obj,
+                        lang=lang,
+                        min_consensus_score=min_consensus,
+                        include_ties=include_ties,
+                        redact_pii=redact_pii,
+                        eval_ratio=eval_ratio,
+                        split_seed=split_seed,
+                        schema_style=schema_style,
+                        cal_map=cal_map,
+                    )
+                    if rec is None:
+                        continue
+                    if split_filter != "all" and rec["split"] != split_filter:
+                        continue
+                    records.append(rec)
+                    total_redactions += red_count
+
+            manifest = build_signed_dpo_manifest(
+                records,
+                organization_id=str(organization.id) if organization is not None else None,
+                lang=lang,
+                split_seed=split_seed,
+                eval_ratio=eval_ratio,
+                min_consensus_score=min_consensus,
+                redact_pii=redact_pii,
+                pii_redactions_total=total_redactions,
+            )
+
+            s3_archive_meta: dict[str, str] | None = None
+            export_bucket = str(getattr(settings, "DATASET_EXPORT_S3_BUCKET", "") or "").strip()
+            if archive_to_s3 and export_bucket:
+                region = str(
+                    getattr(settings, "DATASET_EXPORT_S3_REGION", None)
+                    or getattr(settings, "AUDIT_WORM_S3_REGION", "us-east-1")
+                    or "us-east-1"
+                ).strip()
+                endpoint_host = str(
+                    getattr(settings, "DATASET_EXPORT_S3_ENDPOINT_HOST", "") or ""
+                ).strip()
+                scope_prefix = (
+                    str(organization.id) if organization is not None else str(request.user.id)
+                )
+                obj_key = (
+                    f"dpo-exports/{scope_prefix}/"
+                    f"{manifest['dataset_sha256'][:16]}-{split_filter}.json"
+                )
+                archive_bytes = json.dumps(
+                    {"manifest": manifest, "records": records},
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+                try:
+                    s3_archive_meta = upload_dataset_snapshot_to_s3(
+                        bucket=export_bucket,
+                        region=region,
+                        object_key=obj_key,
+                        payload_bytes=archive_bytes,
+                        endpoint_host=endpoint_host,
+                    )
+                    manifest["s3_archive_uri"] = s3_archive_meta["s3_uri"]
+                    manifest["s3_etag"] = s3_archive_meta["etag"]
+                except Exception as exc:
+                    logger.error("Failed to upload DPO dataset snapshot to S3: %s", exc)
+                    return Response(
+                        {"error": "Failed to upload DPO dataset snapshot to S3 archive."},
+                        status=status.HTTP_502_BAD_GATEWAY,
+                    )
+
+            if organization is not None:
+                enqueue_outbox_event(
+                    organization_id=str(organization.id),
+                    event_type="dataset.exported",
+                    payload={
+                        "pipeline": "dpo",
+                        "total_records": manifest["total_records"],
+                        "train_records": manifest["train_records"],
+                        "eval_records": manifest["eval_records"],
+                        "dataset_sha256": manifest["dataset_sha256"],
+                        "merkle_root": manifest["merkle_root"],
+                        "manifest_hash": manifest["manifest_hash"],
+                        "s3_archive_uri": manifest.get("s3_archive_uri", ""),
+                    },
+                )
+
+            return Response(
+                {"manifest": manifest, "records": records, "query_target": query_target},
+                headers={
+                    "X-Query-Target": query_target,
+                    "X-Dataset-Split-Seed": split_seed,
+                    "X-Dataset-Merkle-Root": str(manifest["merkle_root"]),
+                },
+            )
+
+        captured_scope = get_effective_rls_scope()
+        with use_read_replica() as query_target:
+            resolved_target = query_target
+
+        def _dpo_jsonl_stream() -> Iterator[bytes]:
+            with rls_context(
+                organization_id=captured_scope.organization_id or None,
+                user_id=captured_scope.user_id or None,
+                enforced=captured_scope.enforced,
+            ):
+                with use_read_replica():
+                    cal_lookup: dict[Any, AnnotatorCalibration] = {}
+                    if organization is not None:
+                        cal_lookup = {
+                            c.user_id: c
+                            for c in AnnotatorCalibration.objects.filter(
+                                organization_id=organization.id,
+                                gold_evaluated_count__gt=0,
+                            )
+                        }
+                    for task_obj in qs:
+                        rec, _red = build_dpo_export_record(
+                            task_obj,
+                            lang=lang,
+                            min_consensus_score=min_consensus,
+                            include_ties=include_ties,
+                            redact_pii=redact_pii,
+                            eval_ratio=eval_ratio,
+                            split_seed=split_seed,
+                            schema_style=schema_style,
+                            cal_map=cal_lookup,
+                        )
+                        if rec is None:
+                            continue
+                        if split_filter != "all" and rec["split"] != split_filter:
+                            continue
+                        yield (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
+
+        dpo_resp = StreamingHttpResponse(_dpo_jsonl_stream(), content_type="application/x-ndjson")
+        dpo_resp["Content-Disposition"] = f'attachment; filename="dpo-{split_filter}.jsonl"'
+        dpo_resp["X-Query-Target"] = resolved_target
+        dpo_resp["X-Dataset-Split-Seed"] = split_seed
+        return dpo_resp
 
     def _schedule_post_create_hooks(self, instance: Task) -> None:
         """Persist transactional outbox webhook event and schedule post-commit auto-translation."""

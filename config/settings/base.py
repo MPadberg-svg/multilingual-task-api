@@ -359,6 +359,9 @@ AUDIT_ANCHOR_KMS_ENDPOINT_HOST: str = config("AUDIT_ANCHOR_KMS_ENDPOINT_HOST", d
 ACTIVE_LEARNING_ENTROPY_THRESHOLD: float = config(
     "ACTIVE_LEARNING_ENTROPY_THRESHOLD", default=0.78, cast=float
 )
+DATASET_EXPORT_S3_BUCKET: str = config("DATASET_EXPORT_S3_BUCKET", default="").strip()
+DATASET_EXPORT_S3_REGION: str = config("DATASET_EXPORT_S3_REGION", default="us-east-1").strip()
+DATASET_EXPORT_S3_ENDPOINT_HOST: str = config("DATASET_EXPORT_S3_ENDPOINT_HOST", default="").strip()
 
 CELERY_BEAT_SCHEDULE: dict[str, dict[str, Any]] = {
     "drain-transactional-outbox": {
@@ -379,6 +382,11 @@ CELERY_BEAT_SCHEDULE: dict[str, dict[str, Any]] = {
     "emit-backlog-autoscaling-telemetry": {
         "task": "apps.tasks.tasks.emit_backlog_autoscaling_telemetry",
         "schedule": 60.0,
+    },
+    "calibrate-adaptive-uncertainty-thresholds": {
+        "task": "apps.tasks.tasks.calibrate_adaptive_uncertainty_thresholds",
+        "schedule": 21600.0,
+        "kwargs": {"min_samples": 3, "batch_size": 100},
     },
 }
 

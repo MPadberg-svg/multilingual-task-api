@@ -202,6 +202,7 @@ class AuditChainCheckpointSerializer(serializers.ModelSerializer):
             "covered_up_to_seq",
             "verified_entries",
             "head_hash",
+            "merkle_root",
             "manifest_digest",
             "prev_checkpoint_hash",
             "checkpoint_hash",

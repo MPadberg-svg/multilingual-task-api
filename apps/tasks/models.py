@@ -118,6 +118,7 @@ class Task(TranslatableModel):  # type: ignore[misc]
         default="",
     )
     uncertainty_score = models.FloatField(null=True, blank=True, db_index=True)
+    judge_uncertainty_score = models.FloatField(null=True, blank=True)
     auto_escalated = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
@@ -239,4 +240,52 @@ class AnnotatorCalibration(models.Model):
         return (
             f"AnnotatorCalibration(org={self.organization_id}, user={self.user_id}, "
             f"weight={self.skill_weight})"
+        )
+
+
+class DomainUncertaintyPolicy(models.Model):
+    """Adaptive per-(organization, domain) active-learning uncertainty escalation policy."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        "core.Organization",
+        on_delete=models.CASCADE,
+        related_name="domain_uncertainty_policies",
+    )
+    domain = models.CharField(
+        max_length=24,
+        choices=Task.DOMAIN_CHOICES,
+        default="general",
+    )
+    threshold = models.FloatField(default=0.78)
+    auto_calibrate = models.BooleanField(default=True)
+    triaged_count = models.PositiveIntegerField(default=0)
+    resolved_count = models.PositiveIntegerField(default=0)
+    split_vote_count = models.PositiveIntegerField(default=0)
+    unpredicted_split_count = models.PositiveIntegerField(default=0)
+    false_escalation_count = models.PositiveIntegerField(default=0)
+    empirical_split_rate = models.FloatField(default=0.0)
+    last_calibrated_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["domain"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "domain"],
+                name="tasks_domunc_uniq_org_domain",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["organization", "domain"],
+                name="tasks_domunc_org_domain_idx",
+            )
+        ]
+
+    def __str__(self) -> str:
+        return (
+            f"DomainUncertaintyPolicy(org={self.organization_id}, domain={self.domain}, "
+            f"threshold={self.threshold})"
         )

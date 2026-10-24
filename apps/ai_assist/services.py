@@ -361,8 +361,12 @@ class AIService:
         if cached is not None:
             record_cache_hit()
             cached_dict = dict(cached)
-            # Re-evaluate threshold dynamically against current ACTIVE_LEARNING_ENTROPY_THRESHOLD
-            uncertainty = compute_preference_uncertainty(cached_dict["choice_probabilities"])
+            # Re-evaluate threshold dynamically against tenant per-domain uncertainty policy
+            uncertainty = compute_preference_uncertainty(
+                cached_dict["choice_probabilities"],
+                organization_id=organization_id,
+                domain=clean_domain,
+            )
             return {**cached_dict, **uncertainty}
 
         record_cache_miss()
@@ -395,7 +399,11 @@ class AIService:
             logger.warning("AI RLHF judge schema validation failed: %s", exc)
             raise UpstreamAIResponseError("AI response failed schema validation") from exc
 
-        uncertainty = compute_preference_uncertainty(validated.choice_probabilities.model_dump())
+        uncertainty = compute_preference_uncertainty(
+            validated.choice_probabilities.model_dump(),
+            organization_id=organization_id,
+            domain=clean_domain,
+        )
         base_payload: dict[str, Any] = {
             "preference": validated.preference,
             "choice_probabilities": uncertainty["normalized_probabilities"],

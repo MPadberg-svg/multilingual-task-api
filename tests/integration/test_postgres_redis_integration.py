@@ -980,3 +980,184 @@ def test_live_postgres_ed25519_bundle_replica_rls_and_redis_broker_queue_telemet
         broker_client.delete("celery", "default", "tasks", "ai")
         broker_client.close()
         connections.close_all()
+
+
+@pytest.mark.django_db(transaction=True, databases=["default", "replica"])
+def test_live_postgres_merkle_inclusion_dpo_streaming_rls_and_adaptive_domain_policies() -> None:
+    """Verify RFC 9162 Merkle proofs, RLS DPO streaming & DomainUncertaintyPolicy RLS on PG 16."""
+    from django.test import override_settings
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from apps.core.audit_chain import verify_audit_inclusion_bundle_offline
+    from apps.core.rls import rls_context
+    from apps.tasks.dpo_export import verify_dpo_manifest_offline
+    from apps.tasks.models import DomainUncertaintyPolicy, TaskAnnotation
+    from apps.tasks.uncertainty import upsert_domain_uncertainty_policy
+
+    suffix = uuid.uuid4().hex[:8]
+    owner_a = User.objects.create_user(
+        email=f"v1110-owner-a-{suffix}@example.com", password="Password123!"
+    )
+    owner_b = User.objects.create_user(
+        email=f"v1110-owner-b-{suffix}@example.com", password="Password123!"
+    )
+    org_a = Organization.objects.create(
+        name=f"V1110 Org A {suffix}", slug=f"v1110-org-a-{suffix}", plan="enterprise"
+    )
+    org_b = Organization.objects.create(
+        name=f"V1110 Org B {suffix}", slug=f"v1110-org-b-{suffix}", plan="enterprise"
+    )
+    OrganizationMember.objects.create(user=owner_a, organization=org_a, role="owner")
+    OrganizationMember.objects.create(user=owner_b, organization=org_b, role="owner")
+
+    ed_priv = Ed25519PrivateKey.generate()
+    ed_priv_pem = ed_priv.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode("ascii")
+    ed_pub_pem = (
+        ed_priv.public_key()
+        .public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode("ascii")
+    )
+
+    try:
+        # 1. Seed DomainUncertaintyPolicy in both tenants and verify PostgreSQL 16 FORCE RLS
+        pol_a = upsert_domain_uncertainty_policy(
+            org_a, domain="medical", threshold=0.61, auto_calibrate=False
+        )
+        upsert_domain_uncertainty_policy(
+            org_b, domain="medical", threshold=0.84, auto_calibrate=False
+        )
+        with rls_context(organization_id=str(org_a.id), user_id=str(owner_a.id), enforced=True):
+            visible_ids = list(DomainUncertaintyPolicy.objects.values_list("id", flat=True))
+            assert visible_ids == [pol_a.id]
+
+        # 2. Seed consensus tasks in org_a & org_b and verify RLS-isolated replica DPO export
+        t_a = Task.objects.create(
+            user=owner_a,
+            organization=org_a,
+            status="completed",
+            domain="medical",
+            consensus_choice="response_a",
+            consensus_score=1.0,
+        )
+        t_a.set_current_language("en")
+        t_a.title = "Org A Clinical DPO Case"
+        t_a.description = "Patient contact patient@clinic.org"
+        t_a.save()
+        TaskAnnotation.objects.create(
+            task=t_a,
+            annotator=owner_a,
+            preference="response_a",
+            response_a="Guideline-concordant regimen A",
+            response_b="Contraindicated regimen B",
+        )
+
+        t_b = Task.objects.create(
+            user=owner_b,
+            organization=org_b,
+            status="completed",
+            domain="medical",
+            consensus_choice="response_b",
+            consensus_score=1.0,
+        )
+        t_b.set_current_language("en")
+        t_b.title = "Org B Confidential Case"
+        t_b.save()
+        TaskAnnotation.objects.create(
+            task=t_b,
+            annotator=owner_b,
+            preference="response_b",
+            response_a="B-opt-1",
+            response_b="B-opt-2",
+        )
+
+        audit_entries = [
+            AuditLog.objects.create(
+                organization=org_a,
+                user=owner_a,
+                action="created",
+                resource_type="Task",
+                resource_id=f"{t_a.id}-{i}",
+            )
+            for i in range(4)
+        ]
+
+        with override_settings(AUDIT_ANCHOR_ED25519_PRIVATE_KEY_PEM=ed_priv_pem):
+            ckpt_1, _ = create_organization_audit_checkpoint(org_a)
+            assert ckpt_1 is not None
+            AuditLog.objects.create(
+                organization=org_a,
+                user=owner_a,
+                action="updated",
+                resource_type="Task",
+                resource_id=str(t_a.id),
+            )
+            ckpt_2, _ = create_organization_audit_checkpoint(org_a)
+            assert ckpt_2 is not None
+
+            token_a = str(RefreshToken.for_user(owner_a).access_token)
+            token_b = str(RefreshToken.for_user(owner_b).access_token)
+            client_a = APIClient()
+            client_a.credentials(
+                HTTP_AUTHORIZATION=f"Bearer {token_a}",
+                HTTP_X_ORGANIZATION_ID=str(org_a.id),
+            )
+            client_b = APIClient()
+            client_b.credentials(
+                HTTP_AUTHORIZATION=f"Bearer {token_b}",
+                HTTP_X_ORGANIZATION_ID=str(org_b.id),
+            )
+
+            # Cross-tenant inclusion proof returns 404; replica-routed org_a proof succeeds
+            assert (
+                client_b.get(
+                    f"/api/v1/organizations/{org_b.id}/audit-logs/{audit_entries[1].id}/inclusion-proof/"
+                ).status_code
+                == 404
+            )
+            inc_resp = client_a.get(
+                f"/api/v1/organizations/{org_a.id}/audit-logs/{audit_entries[1].id}/inclusion-proof/"
+            )
+            assert inc_resp.status_code == 200
+            assert inc_resp.headers["X-Query-Target"] == "replica"
+            assert verify_audit_inclusion_bundle_offline(inc_resp.json(), ed_pub_pem)["valid"]
+
+            cons_resp = client_a.get(
+                f"/api/v1/organizations/{org_a.id}/audit-logs/checkpoints/consistency-proof/"
+                "?from_seq=1&to_seq=2"
+            )
+            assert cons_resp.status_code == 200
+            assert cons_resp.headers["X-Query-Target"] == "replica"
+            assert cons_resp.json()["verification"]["valid"] is True
+
+            # Replica-routed RLS-isolated streaming DPO NDJSON + signed provenance manifest
+            dpo_stream = client_a.get("/api/v1/tasks/export-dpo/")
+            assert dpo_stream.status_code == 200
+            assert dpo_stream.headers["X-Query-Target"] == "replica"
+            dpo_rows = [
+                json.loads(line)
+                for line in b"".join(dpo_stream.streaming_content).decode("utf-8").splitlines()
+                if line.strip()
+            ]
+            assert [r["id"] for r in dpo_rows] == [str(t_a.id)]
+            assert "[REDACTED_EMAIL]" in dpo_rows[0]["prompt"]
+
+            dpo_manifest_resp = client_a.get("/api/v1/tasks/export-dpo/?export_format=manifest")
+            assert dpo_manifest_resp.status_code == 200
+            assert dpo_manifest_resp.headers["X-Query-Target"] == "replica"
+            assert (
+                verify_dpo_manifest_offline(dpo_manifest_resp.json()["manifest"], ed_pub_pem)[
+                    "valid"
+                ]
+                is True
+            )
+    finally:
+        connections.close_all()

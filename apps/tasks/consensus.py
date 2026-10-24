@@ -90,7 +90,11 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
 
     consensus_reached = False
     awaiting_adjudication = False
-    uncertainty_meta = compute_preference_uncertainty(weighted_totals)
+    uncertainty_meta = compute_preference_uncertainty(
+        weighted_totals,
+        organization_id=str(task.organization_id) if task.organization_id else None,
+        domain=task_domain,
+    )
     task.claimed_by = None
     task.claimed_until = None
     task.consensus_score = agreement_ratio
@@ -165,6 +169,20 @@ def evaluate_task_consensus(task: Task) -> dict[str, Any]:
             organization_id=org_id,
             event_type="task.completed",
             payload=event_data,
+        )
+
+    if (
+        (consensus_reached or awaiting_adjudication)
+        and task.organization is not None
+        and not task.is_gold
+        and task.judge_uncertainty_score is not None
+    ):
+        from apps.tasks.uncertainty import calibrate_organization_domain_thresholds
+
+        calibrate_organization_domain_thresholds(
+            task.organization,
+            min_samples=3,
+            target_domain=task_domain,
         )
 
     return {

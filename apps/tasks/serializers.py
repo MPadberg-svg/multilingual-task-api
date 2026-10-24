@@ -341,6 +341,7 @@ class TaskSerializer(serializers.ModelSerializer):
             "consensus_score": instance.consensus_score,
             "consensus_choice": instance.consensus_choice,
             "uncertainty_score": instance.uncertainty_score,
+            "judge_uncertainty_score": instance.judge_uncertainty_score,
             "auto_escalated": instance.auto_escalated,
             "annotation_count": self.get_annotation_count(instance),
             "is_active": instance.is_active,

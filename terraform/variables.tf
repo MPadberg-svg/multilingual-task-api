@@ -18,7 +18,7 @@ variable "environment" {
 variable "image_tag" {
   description = "Immutable container image tag (e.g. git SHA or release tag)"
   type        = string
-  default     = "v1.10.0"
+  default     = "v1.11.0"
 }
 
 variable "domain_name" {
@@ -215,6 +215,18 @@ variable "active_learning_entropy_threshold" {
   description = "Normalized Shannon/margin uncertainty score threshold promoting RLHF pairs to difficulty=expert"
   type        = number
   default     = 0.78
+}
+
+variable "enable_dataset_export_bucket" {
+  description = "Provision an encrypted private S3 bucket for signed DPO / RLHF dataset snapshot archives"
+  type        = bool
+  default     = true
+}
+
+variable "dataset_export_retention_days" {
+  description = "Lifecycle retention window in days for archived DPO / RLHF dataset snapshots in S3"
+  type        = number
+  default     = 90
 }
 
 variable "redis_node_type" {

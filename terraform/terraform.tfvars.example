@@ -8,7 +8,7 @@ project_name = "multilingual-task-api"
 environment  = "production"
 
 # Immutable container image tag (e.g. Git commit SHA or release tag pushed to ECR)
-image_tag = "v1.10.0"
+image_tag = "v1.11.0"
 
 # GitHub OIDC keyless deployment configuration
 github_repository           = "MPadberg-svg/multilingual-task-api"
@@ -48,6 +48,8 @@ celery_max_capacity               = 6
 celery_backlog_target_per_worker  = 50
 celery_backlog_alarm_threshold    = 250
 active_learning_entropy_threshold = 0.78
+enable_dataset_export_bucket      = true
+dataset_export_retention_days     = 90
 
 # Redis & ECS Fargate sizing
 redis_node_type   = "cache.t3.micro"

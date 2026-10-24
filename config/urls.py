@@ -34,7 +34,9 @@ from apps.core.tenant_views import (
     OrganizationAPIKeyDetailView,
     OrganizationAPIKeyListCreateView,
     OrganizationAuditCheckpointBundleView,
+    OrganizationAuditCheckpointConsistencyProofView,
     OrganizationAuditCheckpointListCreateView,
+    OrganizationAuditLogInclusionProofView,
     OrganizationAuditLogListView,
     OrganizationAuditLogVerifyView,
     OrganizationAuditPublicKeyView,
@@ -49,6 +51,7 @@ from apps.core.tenant_views import (
     OrganizationSCIMUserDetailView,
     OrganizationSCIMUsersView,
     OrganizationSSOConfigView,
+    OrganizationUncertaintyPolicyView,
     OrganizationUsageView,
     OrganizationWebhookDeliveryListView,
     OrganizationWebhookDeliveryReplayView,
@@ -126,14 +129,29 @@ urlpatterns = [
         name="organization-audit-logs-checkpoints",
     ),
     path(
+        "api/v1/organizations/<uuid:org_id>/audit-logs/checkpoints/consistency-proof/",
+        OrganizationAuditCheckpointConsistencyProofView.as_view(),
+        name="organization-audit-logs-checkpoints-consistency",
+    ),
+    path(
         "api/v1/organizations/<uuid:org_id>/audit-logs/checkpoints/<uuid:checkpoint_id>/bundle/",
         OrganizationAuditCheckpointBundleView.as_view(),
         name="organization-audit-logs-checkpoint-bundle",
     ),
     path(
+        "api/v1/organizations/<uuid:org_id>/audit-logs/<uuid:entry_id>/inclusion-proof/",
+        OrganizationAuditLogInclusionProofView.as_view(),
+        name="organization-audit-logs-inclusion-proof",
+    ),
+    path(
         "api/v1/organizations/<uuid:org_id>/annotators/calibration/",
         OrganizationAnnotatorCalibrationView.as_view(),
         name="organization-annotators-calibration",
+    ),
+    path(
+        "api/v1/organizations/<uuid:org_id>/uncertainty-policies/",
+        OrganizationUncertaintyPolicyView.as_view(),
+        name="organization-uncertainty-policies",
     ),
     path(
         "api/v1/organizations/<uuid:org_id>/usage/",
