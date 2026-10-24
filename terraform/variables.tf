@@ -18,7 +18,7 @@ variable "environment" {
 variable "image_tag" {
   description = "Immutable container image tag (e.g. git SHA or release tag)"
   type        = string
-  default     = "v1.7.0"
+  default     = "v1.8.0"
 }
 
 variable "domain_name" {
@@ -143,6 +143,30 @@ variable "db_username" {
 variable "db_password" {
   type      = string
   sensitive = true
+}
+
+variable "enable_read_replica" {
+  description = "Provision an encrypted RDS PostgreSQL 16 read replica and wire POSTGRES_REPLICA_HOST into ECS"
+  type        = bool
+  default     = false
+}
+
+variable "db_replica_instance_class" {
+  description = "Optional instance class override for the RDS read replica (defaults to db_instance_class when empty)"
+  type        = string
+  default     = ""
+}
+
+variable "replica_lag_alarm_seconds" {
+  description = "CloudWatch alarm threshold in seconds for RDS PostgreSQL ReplicaLag"
+  type        = number
+  default     = 30
+}
+
+variable "alert_sns_topic_arn" {
+  description = "Optional SNS topic ARN receiving CloudWatch alarm notifications for Outbox DLQ, RDS lag/CPU, and ALB 5xx"
+  type        = string
+  default     = ""
 }
 
 variable "redis_node_type" {

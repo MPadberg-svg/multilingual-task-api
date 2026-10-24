@@ -27,6 +27,7 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.exceptions import TokenError
 from rest_framework_simplejwt.tokens import RefreshToken
 
+from apps.core.audit_chain import verify_organization_audit_chain
 from apps.core.db_router import use_read_replica
 from apps.core.finops import get_org_finops_summary, invalidate_org_budget_cache
 from apps.core.middleware import RequestLoggingMiddleware
@@ -391,20 +392,56 @@ class OrganizationAuditLogListView(APIView):
 
     def get(self, request: Request, org_id: str) -> Response:
         org, _role = _require_org_admin(request.user, org_id)
-        qs = AuditLog.objects.filter(organization=org).select_related("user")
+        with use_read_replica() as query_target:
+            qs = AuditLog.objects.filter(organization=org).select_related("user")
 
-        action_filter = request.query_params.get("action", "").strip()
-        if action_filter:
-            qs = qs.filter(action=action_filter)
+            action_filter = request.query_params.get("action", "").strip()
+            if action_filter:
+                qs = qs.filter(action=action_filter)
 
-        resource_filter = request.query_params.get("resource_type", "").strip()
-        if resource_filter:
-            qs = qs.filter(resource_type=resource_filter)
+            resource_filter = request.query_params.get("resource_type", "").strip()
+            if resource_filter:
+                qs = qs.filter(resource_type=resource_filter)
 
-        paginator = StandardResultsSetPagination()
-        page = paginator.paginate_queryset(qs, request, view=self)
-        serializer = AuditLogSerializer(page, many=True)
-        return paginator.get_paginated_response(serializer.data)
+            qs = qs.order_by("-chain_seq", "-created_at")
+            paginator = StandardResultsSetPagination()
+            page = paginator.paginate_queryset(qs, request, view=self)
+            serializer = AuditLogSerializer(page, many=True)
+            response = paginator.get_paginated_response(serializer.data)
+        response["X-Query-Target"] = query_target
+        return response
+
+
+class OrganizationAuditLogVerifyView(APIView):
+    """Cryptographic SHA-256 hash-chain tamper verification endpoint for SOC 2 / ISO 27001 audits."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="v1_organizations_audit_logs_verify_retrieve",
+        responses={200: {"type": "object"}},
+    )
+    def get(self, request: Request, org_id: str) -> Response:
+        org, _role = _require_org_admin(request.user, org_id)
+        report, query_target = verify_organization_audit_chain(org)
+        return Response(report, headers={"X-Query-Target": query_target})
+
+
+class OrganizationAnnotatorCalibrationView(APIView):
+    """Replica-routed empirical gold-task accuracy & Bayesian skill-weight leaderboard."""
+
+    permission_classes = [IsAuthenticated]
+
+    @extend_schema(
+        operation_id="v1_organizations_annotators_calibration_retrieve",
+        responses={200: {"type": "object"}},
+    )
+    def get(self, request: Request, org_id: str) -> Response:
+        from apps.tasks.calibration import get_organization_calibration_leaderboard
+
+        org, _role = _require_org_admin(request.user, org_id)
+        payload, query_target = get_organization_calibration_leaderboard(org)
+        return Response(payload, headers={"X-Query-Target": query_target})
 
 
 class OrganizationUsageView(APIView):

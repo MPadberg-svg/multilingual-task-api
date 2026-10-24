@@ -39,6 +39,7 @@ VALID_WEBHOOK_EVENTS: frozenset[str] = frozenset(
         "ai.budget_exceeded",
         "scim.user_provisioned",
         "scim.user_deprovisioned",
+        "annotator.calibrated",
     }
 )
 
@@ -400,6 +401,7 @@ class AuditLog(models.Model):
             ("task_claimed", "Task Claimed"),
             ("task_annotated", "Task Annotated"),
             ("task_adjudicated", "Task Adjudicated"),
+            ("gold_task_evaluated", "Gold Calibration Task Evaluated"),
             ("exported", "Dataset Exported"),
         ],
     )
@@ -408,14 +410,35 @@ class AuditLog(models.Model):
     ip_address = models.GenericIPAddressField(null=True, blank=True)
     user_agent = models.TextField(blank=True)
     metadata = models.JSONField(default=dict, blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    chain_seq = models.PositiveBigIntegerField(default=0)
+    prev_hash = models.CharField(max_length=64, default="0" * 64)
+    entry_hash = models.CharField(max_length=64, default="", db_index=True)
+    created_at = models.DateTimeField(default=timezone.now, editable=False)
 
     class Meta:
         indexes = [
             models.Index(fields=["organization", "action", "created_at"]),
             models.Index(fields=["user", "created_at"]),
+            models.Index(fields=["organization", "chain_seq"], name="core_auditlog_org_seq_idx"),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["organization", "chain_seq"],
+                condition=models.Q(organization__isnull=False, chain_seq__gt=0),
+                name="core_auditlog_uniq_org_seq",
+            )
         ]
         ordering = ["-created_at"]
+
+    def save(self, *args: Any, **kwargs: Any) -> None:
+        if not self._state.adding:
+            raise ValidationError("AuditLog entries are cryptographically sealed and immutable.")
+        from apps.core.audit_chain import seal_and_insert_audit_log
+
+        seal_and_insert_audit_log(self, super().save, *args, **kwargs)
+
+    def delete(self, *args: Any, **kwargs: Any) -> tuple[int, dict[str, int]]:
+        raise ValidationError("AuditLog entries are cryptographically sealed and immutable.")
 
     def __str__(self) -> str:
         return f"{self.action} {self.resource_type} by {self.user} at {self.created_at}"

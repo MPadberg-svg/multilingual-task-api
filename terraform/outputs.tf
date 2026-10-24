@@ -74,6 +74,12 @@ output "rds_endpoint" {
   sensitive   = true
 }
 
+output "rds_replica_endpoint" {
+  description = "RDS PostgreSQL read-replica endpoint (empty when enable_read_replica is false)"
+  value       = try(aws_db_instance.postgres_replica[0].endpoint, "")
+  sensitive   = true
+}
+
 output "redis_endpoint" {
   description = "ElastiCache Redis primary endpoint"
   value       = aws_elasticache_replication_group.redis.primary_endpoint_address

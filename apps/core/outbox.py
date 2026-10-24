@@ -153,6 +153,13 @@ def drain_outbox_batch(
                     err_text = str(exc)[:450]
                     span.set_error(err_text)
                     if attempt_number >= MAX_OUTBOX_ATTEMPTS:
+                        logger.error(
+                            "Outbox event moved to dead-letter: id=%s topic=%s type=%s err=%s",
+                            ev.id,
+                            ev.topic,
+                            ev.event_type,
+                            err_text,
+                        )
                         OutboxEvent.objects.filter(id=ev.id).update(
                             status="failed",
                             last_error=err_text,
